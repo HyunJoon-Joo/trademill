@@ -1,0 +1,73 @@
+name: Generate Daily Market Map
+
+on:
+  workflow_dispatch:
+  schedule:
+    # GitHub Actions cron은 UTC 기준.
+    # 22:30 UTC = 한국시간 다음날 07:30.
+    # 미국 장 마감 후 데이터가 어느 정도 반영된 뒤 실행하는 목적.
+    - cron: '30 22 * * 1-5'
+
+permissions:
+  contents: write
+
+jobs:
+  generate-market-map:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate market map
+        run: node scripts/fetch-market-data.mjs
+
+      - name: Sync data to docs for GitHub Pages
+        run: |
+          mkdir -p docs/data
+          rm -rf docs/data/maps
+          cp -R public/data/maps docs/data/maps
+          cp public/data/market-terrain.json docs/data/market-terrain.json
+
+          if [ ! -f docs/index.html ]; then
+            cat > docs/index.html <<'HTML'
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TM Phaser Market Maps</title>
+</head>
+<body>
+  <h1>TM Phaser Market Maps</h1>
+  <p>Market map JSON storage for TM Phaser.</p>
+  <ul>
+    <li><a href="./data/maps/index.json">Map Index JSON</a></li>
+    <li><a href="./data/market-terrain.json">Latest Market Terrain JSON</a></li>
+  </ul>
+</body>
+</html>
+HTML
+          fi
+
+      - name: Commit generated map files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add public/data docs/data docs/index.html
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Generate daily market map"
+            git push
+          fi
