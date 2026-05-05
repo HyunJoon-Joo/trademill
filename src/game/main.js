@@ -1,4 +1,6 @@
 import Phaser from 'phaser';
+import { BootScene } from './scenes/BootScene';
+import { MenuScene } from './scenes/MenuScene';
 import { GameScene } from './scenes/GameScene';
 
 let game = null;
@@ -21,7 +23,11 @@ export function StartGame(parentId) {
                 debug: false
             }
         },
-        scene: [GameScene]
+        scene: [
+            BootScene,
+            MenuScene,
+            GameScene
+        ]
     };
 
     game = new Phaser.Game(config);

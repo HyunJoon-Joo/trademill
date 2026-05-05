@@ -1,24 +1,14 @@
 import Phaser from 'phaser';
-
-/*
-  나중에 GitHub Pages 외부 JSON을 붙이면 여기에 넣으면 됨.
-
-  예:
-  const DATA_BASE_URL = 'https://너의깃허브아이디.github.io/저장소이름';
-
-  지금 로컬 개발에서는 빈 문자열 유지.
-*/
-const DATA_BASE_URL = '';
-
-const MAP_INDEX_PATH = '/data/maps/index.json';
-const LEGACY_MAP_PATH = '/data/market-terrain.json';
+import { getDataUrl } from '../config/dataConfig';
 
 export class GameScene extends Phaser.Scene {
     constructor() {
         super('GameScene');
     }
 
-    init() {
+    init(data = {}) {
+        this.selectedMapMeta = data.mapMeta || null;
+
         this.scrollSpeed = 88;
 
         this.startX = 180;
@@ -30,6 +20,7 @@ export class GameScene extends Phaser.Scene {
         this.isGameOver = false;
         this.isRestarting = false;
         this.restartRequested = false;
+        this.menuRequested = false;
         this.worldReady = false;
 
         this.wheelBody = null;
@@ -50,6 +41,7 @@ export class GameScene extends Phaser.Scene {
         this.jumpKey = null;
         this.restartKey = null;
         this.enterKey = null;
+        this.menuKey = null;
 
         this.groundContactCount = 0;
         this.lastGroundedAt = -99999;
@@ -61,13 +53,6 @@ export class GameScene extends Phaser.Scene {
         this.maxFallDistance = 0;
         this.spawnGraceUntil = 0;
 
-        /*
-          낙하 / 브레이크 룰
-
-          fatal 값 이상이면 그냥 즉사.
-          danger 값 이상이면 착지 후 브레이크 챌린지 발생.
-          왼쪽 방향키를 연타해서 brakeTapsRequired 만큼 채우면 생존.
-        */
         this.dangerVelocityY = 8.8;
         this.fatalVelocityY = 17.5;
 
@@ -85,11 +70,10 @@ export class GameScene extends Phaser.Scene {
 
         this.onCollisionStart = null;
         this.onCollisionEnd = null;
-        this.handleWindowKeyDown = null;
 
-        this.mapIndex = null;
         this.marketTerrainData = null;
         this.currentMapMeta = null;
+        this.lastResultSaved = false;
     }
 
     create() {
@@ -115,7 +99,7 @@ export class GameScene extends Phaser.Scene {
         this.infoText = this.add.text(
             24,
             84,
-            'RIGHT tap/hold: climb  /  LEFT tap on ground: brake  /  SPACE or UP: jump  /  After GAME OVER: R or Enter',
+            'RIGHT tap/hold: climb  /  LEFT tap on ground: brake  /  SPACE or UP: jump  /  GAME OVER: R restart, M menu',
             {
                 fontFamily: 'Arial',
                 fontSize: '18px',
@@ -131,7 +115,7 @@ export class GameScene extends Phaser.Scene {
             align: 'center'
         }).setOrigin(0.5).setScrollFactor(0);
 
-        this.loadingText = this.add.text(640, 360, 'LOADING MARKET MAP...', {
+        this.loadingText = this.add.text(640, 360, 'LOADING SELECTED MARKET MAP...', {
             fontFamily: 'Arial',
             fontSize: '28px',
             color: '#ffffff',
@@ -142,6 +126,7 @@ export class GameScene extends Phaser.Scene {
         this.jumpKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
         this.restartKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
         this.enterKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
+        this.menuKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.M);
 
         this.terrainGraphics = this.add.graphics();
         this.wheelGraphics = this.add.graphics();
@@ -193,76 +178,31 @@ export class GameScene extends Phaser.Scene {
         this.matter.world.on('collisionstart', this.onCollisionStart);
         this.matter.world.on('collisionend', this.onCollisionEnd);
 
-        this.handleWindowKeyDown = (event) => {
-            if (event.repeat) {
-                return;
-            }
-
-            if ((event.code === 'KeyR' || event.code === 'Enter') && this.isGameOver) {
-                event.preventDefault();
-                this.requestRestart();
-            }
-        };
-
-        window.addEventListener('keydown', this.handleWindowKeyDown);
-
-        this.input.on('pointerdown', () => {
-            if (this.isGameOver) {
-                this.requestRestart();
-            }
-        });
-
+        /*
+          중요:
+          여기서 clearRunObjects()를 부르면 MenuScene으로 넘어가는 과정에서
+          Matter body cleanup 순서와 충돌할 수 있다.
+          그래서 shutdown 때는 이벤트만 안전하게 해제한다.
+        */
         this.events.once('shutdown', () => {
-            if (this.onCollisionStart) {
-                this.matter.world.off('collisionstart', this.onCollisionStart);
-            }
-
-            if (this.onCollisionEnd) {
-                this.matter.world.off('collisionend', this.onCollisionEnd);
-            }
-
-            if (this.handleWindowKeyDown) {
-                window.removeEventListener('keydown', this.handleWindowKeyDown);
-            }
-
-            this.clearRunObjects();
+            this.detachCollisionEvents();
         });
 
-        this.loadLatestMarketMap();
+        this.loadSelectedMarketMap();
     }
 
-    async loadJson(path) {
-        const url = `${DATA_BASE_URL}${path}?t=${Date.now()}`;
-        const response = await fetch(url);
-
-        if (!response.ok) {
-            throw new Error(`${path} 로드 실패: ${response.status}`);
-        }
-
-        return response.json();
-    }
-
-    async loadLatestMarketMap() {
+    async loadSelectedMarketMap() {
         try {
-            const index = await this.loadJson(MAP_INDEX_PATH);
+            const mapMeta = this.getSelectedMapMeta();
 
-            if (!index || !Array.isArray(index.maps) || index.maps.length === 0) {
-                throw new Error('maps/index.json에 maps 목록이 없습니다.');
+            if (!mapMeta || !mapMeta.path) {
+                throw new Error('선택된 mapMeta 또는 path가 없습니다.');
             }
 
-            const latest =
-                index.maps.find((m) => m.mapId === index.latestMapId) ||
-                index.maps[0];
+            const mapData = await this.fetchJson(mapMeta.path);
 
-            if (!latest || !latest.path) {
-                throw new Error('latest map path를 찾을 수 없습니다.');
-            }
-
-            const mapData = await this.loadJson(latest.path);
-
-            this.mapIndex = index;
+            this.currentMapMeta = mapMeta;
             this.marketTerrainData = mapData;
-            this.currentMapMeta = latest;
 
             this.setMarketInfoText(mapData);
 
@@ -271,53 +211,52 @@ export class GameScene extends Phaser.Scene {
 
             if (this.loadingText) {
                 this.loadingText.setText('MARKET MAP LOADED');
-                this.time.delayedCall(650, () => {
+
+                this.time.delayedCall(500, () => {
                     if (this.loadingText) {
                         this.loadingText.destroy();
                         this.loadingText = null;
                     }
                 });
             }
-        } catch (indexError) {
-            console.warn('index 기반 맵 로드 실패. legacy 파일로 fallback합니다.');
-            console.warn(indexError);
+        } catch (error) {
+            console.error(error);
 
-            try {
-                const legacyMap = await this.loadJson(LEGACY_MAP_PATH);
-
-                this.marketTerrainData = legacyMap;
-                this.currentMapMeta = {
-                    mapId: legacyMap.mapId || 'legacy-market-terrain',
-                    date: legacyMap.date || legacyMap.marketDate || 'unknown',
-                    path: LEGACY_MAP_PATH
-                };
-
-                this.setMarketInfoText(legacyMap);
-
-                this.worldReady = true;
-                this.resetRun();
-
-                if (this.loadingText) {
-                    this.loadingText.setText('LEGACY MARKET MAP LOADED');
-                    this.time.delayedCall(650, () => {
-                        if (this.loadingText) {
-                            this.loadingText.destroy();
-                            this.loadingText = null;
-                        }
-                    });
-                }
-            } catch (legacyError) {
-                console.error(legacyError);
-
-                if (this.loadingText) {
-                    this.loadingText.setText(
-                        'FAILED TO LOAD MARKET MAP\nRun: node scripts/fetch-market-data.mjs'
-                    );
-                }
-
-                this.marketInfoText.setText('MARKET: failed to load map data');
+            if (this.loadingText) {
+                this.loadingText.setText(
+                    'FAILED TO LOAD SELECTED MAP\nPress M to return to menu'
+                );
             }
+
+            this.marketInfoText.setText('MARKET: failed to load selected map');
         }
+    }
+
+    getSelectedMapMeta() {
+        if (this.selectedMapMeta) {
+            return this.selectedMapMeta;
+        }
+
+        const index = this.registry.get('mapIndex');
+
+        if (!index || !Array.isArray(index.maps) || index.maps.length === 0) {
+            return null;
+        }
+
+        return (
+            index.maps.find((m) => m.mapId === index.latestMapId) ||
+            index.maps[0]
+        );
+    }
+
+    async fetchJson(path) {
+        const response = await fetch(getDataUrl(path));
+
+        if (!response.ok) {
+            throw new Error(`${path} 로드 실패: ${response.status}`);
+        }
+
+        return response.json();
     }
 
     setMarketInfoText(mapData) {
@@ -334,6 +273,17 @@ export class GameScene extends Phaser.Scene {
         const restartPressed =
             Phaser.Input.Keyboard.JustDown(this.restartKey) ||
             Phaser.Input.Keyboard.JustDown(this.enterKey);
+
+        const menuPressed = Phaser.Input.Keyboard.JustDown(this.menuKey);
+
+        if (menuPressed && (this.isGameOver || !this.worldReady)) {
+            this.requestMenu();
+        }
+
+        if (this.menuRequested) {
+            this.performGoToMenu();
+            return;
+        }
 
         if (!this.worldReady) {
             return;
@@ -378,6 +328,43 @@ export class GameScene extends Phaser.Scene {
         ) {
             this.gameOver(distance, 'OUT OF MARKET');
         }
+    }
+
+    requestMenu() {
+        this.menuRequested = true;
+    }
+
+    performGoToMenu() {
+        try {
+            this.menuRequested = false;
+            this.detachCollisionEvents();
+
+            if (this.input?.keyboard && typeof this.input.keyboard.resetKeys === 'function') {
+                this.input.keyboard.resetKeys();
+            }
+
+            this.scene.start('MenuScene');
+        } catch (error) {
+            console.error('MenuScene 전환 실패:', error);
+            this.menuRequested = false;
+        }
+    }
+
+    detachCollisionEvents() {
+        try {
+            if (this.onCollisionStart && this.matter?.world) {
+                this.matter.world.off('collisionstart', this.onCollisionStart);
+            }
+
+            if (this.onCollisionEnd && this.matter?.world) {
+                this.matter.world.off('collisionend', this.onCollisionEnd);
+            }
+        } catch (error) {
+            console.warn('collision 이벤트 해제 중 경고:', error);
+        }
+
+        this.onCollisionStart = null;
+        this.onCollisionEnd = null;
     }
 
     trackAirborneFall() {
@@ -451,7 +438,6 @@ export class GameScene extends Phaser.Scene {
         this.brakeTapsDone = 0;
 
         this.applyLandingStabilizer();
-
         this.updateBrakeText();
     }
 
@@ -462,11 +448,6 @@ export class GameScene extends Phaser.Scene {
 
         const Body = Phaser.Physics.Matter.Matter.Body;
 
-        /*
-          위험 착지 직후 완전 즉사 대신
-          아주 짧게 "버틸 수 있는 상태"를 준다.
-          하지만 브레이크를 안 치면 updateBrakeChallenge에서 죽음.
-        */
         Body.setVelocity(this.wheelBody, {
             x: this.wheelBody.velocity.x * 0.82,
             y: Math.min(this.wheelBody.velocity.y * 0.65, 7.5)
@@ -544,10 +525,6 @@ export class GameScene extends Phaser.Scene {
         const Body = Phaser.Physics.Matter.Matter.Body;
         const grounded = this.isGrounded();
 
-        /*
-          땅에 닿아 있을 때만 브레이크가 강하게 먹는다.
-          공중에서는 왼쪽 키가 조종은 되지만, 브레이크는 거의 안 됨.
-        */
         if (grounded) {
             Body.setVelocity(this.wheelBody, {
                 x: this.wheelBody.velocity.x * 0.64 - 0.10,
@@ -617,6 +594,8 @@ export class GameScene extends Phaser.Scene {
         this.lastGroundX = 0;
 
         this.isGameOver = false;
+        this.lastResultSaved = false;
+        this.menuRequested = false;
 
         this.groundPoints = [];
         this.groundBodies = [];
@@ -715,13 +694,22 @@ export class GameScene extends Phaser.Scene {
 
     clearRunObjects() {
         if (this.wheelBody) {
-            this.matter.world.remove(this.wheelBody);
+            try {
+                this.matter.world.remove(this.wheelBody);
+            } catch (error) {
+                console.warn('wheelBody 제거 중 경고:', error);
+            }
+
             this.wheelBody = null;
         }
 
         if (this.groundBodies && this.groundBodies.length > 0) {
             for (const body of this.groundBodies) {
-                this.matter.world.remove(body);
+                try {
+                    this.matter.world.remove(body);
+                } catch (error) {
+                    console.warn('groundBody 제거 중 경고:', error);
+                }
             }
         }
 
@@ -795,12 +783,6 @@ export class GameScene extends Phaser.Scene {
             );
         }
 
-        /*
-          왼쪽 방향키:
-          - 공중: 살짝 왼쪽으로 이동 가능
-          - 지면 접촉: 브레이크
-          - 위험 착지 후: 브레이크 챌린지 해결
-        */
         if (this.cursors.left.isDown) {
             if (grounded) {
                 Body.setVelocity(this.wheelBody, {
@@ -856,18 +838,19 @@ export class GameScene extends Phaser.Scene {
 
         this.isGameOver = true;
         this.clearBrakeChallenge(false);
+        this.saveLocalResult(distance, reason);
 
         const cx = this.cameras.main.scrollX + 640;
 
-        const panel = this.add.rectangle(cx, 360, 650, 230, 0x000000, 0.72);
+        const panel = this.add.rectangle(cx, 360, 740, 300, 0x000000, 0.74);
 
-        const t1 = this.add.text(cx, 305, reason, {
+        const t1 = this.add.text(cx, 260, reason, {
             fontFamily: 'Arial',
             fontSize: '42px',
             color: '#ffffff'
         }).setOrigin(0.5);
 
-        const t2 = this.add.text(cx, 362, `DISTANCE: ${distance}`, {
+        const t2 = this.add.text(cx, 317, `DISTANCE: ${distance}`, {
             fontFamily: 'Arial',
             fontSize: '28px',
             color: '#f8fafc'
@@ -875,19 +858,128 @@ export class GameScene extends Phaser.Scene {
 
         const mapId = this.marketTerrainData?.mapId || 'unknown map';
 
-        const t3 = this.add.text(cx, 405, mapId, {
+        const record = this.getBestRecord(mapId);
+        const recordText = record
+            ? `LOCAL BEST: ${record.bestDistance} / ATTEMPTS: ${record.attempts}`
+            : 'LOCAL BEST: -';
+
+        const t3 = this.add.text(cx, 360, recordText, {
             fontFamily: 'Arial',
-            fontSize: '18px',
+            fontSize: '20px',
+            color: '#fbbf24'
+        }).setOrigin(0.5);
+
+        const t4 = this.add.text(cx, 397, mapId, {
+            fontFamily: 'Arial',
+            fontSize: '17px',
             color: '#93c5fd'
         }).setOrigin(0.5);
 
-        const t4 = this.add.text(cx, 442, 'Press R or Enter to restart', {
+        const t5 = this.add.text(cx, 432, 'R / Enter: restart     M: menu', {
             fontFamily: 'Arial',
-            fontSize: '22px',
+            fontSize: '20px',
             color: '#cbd5e1'
         }).setOrigin(0.5);
 
-        this.gameOverUi.push(panel, t1, t2, t3, t4);
+        const restartButton = this.createGameOverButton(
+            cx - 130,
+            485,
+            220,
+            48,
+            'RESTART',
+            () => {
+                this.requestRestart();
+            }
+        );
+
+        const menuButton = this.createGameOverButton(
+            cx + 130,
+            485,
+            220,
+            48,
+            'MENU',
+            () => {
+                this.requestMenu();
+            }
+        );
+
+        this.gameOverUi.push(panel, t1, t2, t3, t4, t5, restartButton, menuButton);
+    }
+
+    createGameOverButton(x, y, width, height, label, onClick) {
+        const container = this.add.container(x, y);
+
+        const bg = this.add.rectangle(0, 0, width, height, 0x1e293b, 1)
+            .setStrokeStyle(2, 0x64748b, 1)
+            .setInteractive({ useHandCursor: true });
+
+        const text = this.add.text(0, 0, label, {
+            fontFamily: 'Arial',
+            fontSize: '20px',
+            color: '#ffffff'
+        }).setOrigin(0.5);
+
+        container.add(bg);
+        container.add(text);
+
+        bg.on('pointerover', () => {
+            bg.setFillStyle(0x334155, 1);
+            bg.setStrokeStyle(2, 0x93c5fd, 1);
+        });
+
+        bg.on('pointerout', () => {
+            bg.setFillStyle(0x1e293b, 1);
+            bg.setStrokeStyle(2, 0x64748b, 1);
+        });
+
+        bg.on('pointerdown', () => {
+            onClick();
+        });
+
+        return container;
+    }
+
+    saveLocalResult(distance, reason) {
+        if (this.lastResultSaved) {
+            return;
+        }
+
+        this.lastResultSaved = true;
+
+        const mapId = this.marketTerrainData?.mapId || this.currentMapMeta?.mapId || 'unknown-map';
+        const key = `tm_best_${mapId}`;
+
+        let previous = null;
+
+        try {
+            const raw = localStorage.getItem(key);
+            previous = raw ? JSON.parse(raw) : null;
+        } catch {
+            previous = null;
+        }
+
+        const attempts = (previous?.attempts || 0) + 1;
+        const bestDistance = Math.max(previous?.bestDistance || 0, distance);
+
+        const next = {
+            mapId,
+            bestDistance,
+            lastDistance: distance,
+            attempts,
+            lastReason: reason,
+            updatedAt: new Date().toISOString()
+        };
+
+        localStorage.setItem(key, JSON.stringify(next));
+    }
+
+    getBestRecord(mapId) {
+        try {
+            const raw = localStorage.getItem(`tm_best_${mapId}`);
+            return raw ? JSON.parse(raw) : null;
+        } catch {
+            return null;
+        }
     }
 
     drawTerrain() {
