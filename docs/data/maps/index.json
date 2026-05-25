@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-05-22T23:37:14.967Z",
+  "updatedAt": "2026-05-25T23:36:48.249Z",
   "latestMapId": "2026-05-22_IXIC_1m",
   "maps": [
     {
@@ -20,7 +20,7 @@
         "totalUphill": 12772.21,
         "totalDrop": 12723.05
       },
-      "generatedAt": "2026-05-22T23:37:14.963Z",
+      "generatedAt": "2026-05-25T23:36:48.246Z",
       "path": "/data/maps/2026-05-22_IXIC_1m.json"
     },
     {
