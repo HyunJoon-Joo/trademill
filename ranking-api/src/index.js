@@ -5,7 +5,7 @@ const MAX_ELAPSED_MS = 30 * 60 * 1000;
 const MIN_FINISH_ELAPSED_MS = 3000;
 const MAX_BODY_BYTES = 2048;
 
-const MAP_DATA_BASE_URL = "https://HyunJoon-Joo.github.io/TM_Phaser";
+const MAP_DATA_BASE_URL = "https://HyunJoon-Joo.github.io/trademill";
 const MAP_INDEX_URL = `${MAP_DATA_BASE_URL}/data/maps/index.json`;
 
 const SUBMIT_RATE_WINDOW_SECONDS = 60;

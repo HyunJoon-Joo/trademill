@@ -13,3 +13,7 @@ yarn-error.log*
 # Cloudflare Wrangler local state
 .wrangler/
 ranking-api/.wrangler/
+
+# Cloudflare Wrangler local state
+.wrangler/
+ranking-api/.wrangler/
