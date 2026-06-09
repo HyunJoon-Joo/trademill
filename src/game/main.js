@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene';
 import { MenuScene } from './scenes/MenuScene';
+import { ArchiveScene } from './scenes/ArchiveScene';
 import { GameScene } from './scenes/GameScene';
+import { ResultScene } from './scenes/ResultScene';
 
 let game = null;
 
@@ -16,6 +18,11 @@ export function StartGame(parentId) {
         width: 1280,
         height: 720,
         backgroundColor: '#0f172a',
+
+        dom: {
+            createContainer: true
+        },
+
         physics: {
             default: 'matter',
             matter: {
@@ -23,10 +30,13 @@ export function StartGame(parentId) {
                 debug: false
             }
         },
+
         scene: [
             BootScene,
             MenuScene,
-            GameScene
+            ArchiveScene,
+            GameScene,
+            ResultScene
         ]
     };
 

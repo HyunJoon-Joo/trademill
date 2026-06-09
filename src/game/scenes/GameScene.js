@@ -16,22 +16,30 @@ export class GameScene extends Phaser.Scene {
 
         this.cameraX = 0;
         this.lastGroundX = 0;
+        this.finishLineX = 0;
+        this.finishMargin = 80;
+
+        this.runStartedAt = 0;
 
         this.isGameOver = false;
         this.isRestarting = false;
         this.restartRequested = false;
         this.menuRequested = false;
+        this.resultRequested = false;
+        this.resultData = null;
         this.worldReady = false;
 
         this.wheelBody = null;
         this.wheelGraphics = null;
         this.terrainGraphics = null;
+        this.finishText = null;
 
         this.groundPoints = [];
         this.groundBodies = [];
         this.gameOverUi = [];
 
         this.distanceText = null;
+        this.timeText = null;
         this.infoText = null;
         this.marketInfoText = null;
         this.loadingText = null;
@@ -73,7 +81,6 @@ export class GameScene extends Phaser.Scene {
 
         this.marketTerrainData = null;
         this.currentMapMeta = null;
-        this.lastResultSaved = false;
     }
 
     create() {
@@ -89,7 +96,13 @@ export class GameScene extends Phaser.Scene {
             color: '#ffffff'
         }).setScrollFactor(0);
 
-        this.marketInfoText = this.add.text(24, 58, 'MARKET: loading...', {
+        this.timeText = this.add.text(24, 52, 'TIME: 0:00.0', {
+            fontFamily: 'Arial',
+            fontSize: '18px',
+            color: '#cbd5e1'
+        }).setScrollFactor(0);
+
+        this.marketInfoText = this.add.text(24, 78, 'MARKET: loading...', {
             fontFamily: 'Arial',
             fontSize: '18px',
             color: '#93c5fd',
@@ -98,8 +111,8 @@ export class GameScene extends Phaser.Scene {
 
         this.infoText = this.add.text(
             24,
-            84,
-            'RIGHT tap/hold: climb  /  LEFT tap on ground: brake  /  SPACE or UP: jump  /  GAME OVER: R restart, M menu',
+            104,
+            'RIGHT tap/hold: climb  /  LEFT tap on ground: brake  /  SPACE or UP: jump  /  Reach FINISH to clear the map',
             {
                 fontFamily: 'Arial',
                 fontSize: '18px',
@@ -108,7 +121,7 @@ export class GameScene extends Phaser.Scene {
             }
         ).setScrollFactor(0);
 
-        this.brakeText = this.add.text(640, 132, '', {
+        this.brakeText = this.add.text(640, 144, '', {
             fontFamily: 'Arial',
             fontSize: '32px',
             color: '#fbbf24',
@@ -130,6 +143,12 @@ export class GameScene extends Phaser.Scene {
 
         this.terrainGraphics = this.add.graphics();
         this.wheelGraphics = this.add.graphics();
+
+        this.finishText = this.add.text(0, 0, 'FINISH', {
+            fontFamily: 'Arial',
+            fontSize: '28px',
+            color: '#fbbf24'
+        }).setOrigin(0.5).setVisible(false);
 
         this.onCollisionStart = (event) => {
             if (!this.wheelBody) {
@@ -178,12 +197,6 @@ export class GameScene extends Phaser.Scene {
         this.matter.world.on('collisionstart', this.onCollisionStart);
         this.matter.world.on('collisionend', this.onCollisionEnd);
 
-        /*
-          중요:
-          여기서 clearRunObjects()를 부르면 MenuScene으로 넘어가는 과정에서
-          Matter body cleanup 순서와 충돌할 수 있다.
-          그래서 shutdown 때는 이벤트만 안전하게 해제한다.
-        */
         this.events.once('shutdown', () => {
             this.detachCollisionEvents();
         });
@@ -270,13 +283,14 @@ export class GameScene extends Phaser.Scene {
     }
 
     update(time, delta) {
-        const restartPressed =
-            Phaser.Input.Keyboard.JustDown(this.restartKey) ||
-            Phaser.Input.Keyboard.JustDown(this.enterKey);
+        if (this.resultRequested) {
+            this.performGoToResult();
+            return;
+        }
 
         const menuPressed = Phaser.Input.Keyboard.JustDown(this.menuKey);
 
-        if (menuPressed && (this.isGameOver || !this.worldReady)) {
+        if (menuPressed && !this.worldReady) {
             this.requestMenu();
         }
 
@@ -286,11 +300,6 @@ export class GameScene extends Phaser.Scene {
         }
 
         if (!this.worldReady) {
-            return;
-        }
-
-        if (this.isGameOver && (restartPressed || this.restartRequested)) {
-            this.performRestart();
             return;
         }
 
@@ -317,7 +326,15 @@ export class GameScene extends Phaser.Scene {
         this.drawWheel();
 
         const distance = this.getDistance();
+        const elapsedMs = this.getElapsedMs();
+
         this.distanceText.setText(`DIST: ${distance}`);
+        this.timeText.setText(`TIME: ${this.formatElapsedMs(elapsedMs)}`);
+
+        if (this.hasReachedFinish()) {
+            this.finishRun();
+            return;
+        }
 
         const deadLeft = this.cameraX - 120;
 
@@ -328,6 +345,36 @@ export class GameScene extends Phaser.Scene {
         ) {
             this.gameOver(distance, 'OUT OF MARKET');
         }
+    }
+
+    hasReachedFinish() {
+        if (!this.wheelBody || !this.finishLineX) {
+            return false;
+        }
+
+        return this.wheelBody.position.x >= this.finishLineX - this.finishMargin;
+    }
+
+    finishRun() {
+        this.gameOver(this.getDistance(), 'FINISH');
+    }
+
+    getElapsedMs() {
+        if (!this.runStartedAt) {
+            return 0;
+        }
+
+        return Math.max(0, Math.floor(this.time.now - this.runStartedAt));
+    }
+
+    formatElapsedMs(ms) {
+        const value = Math.max(0, Math.floor(Number(ms) || 0));
+        const totalSeconds = Math.floor(value / 1000);
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        const tenths = Math.floor((value % 1000) / 100);
+
+        return `${minutes}:${String(seconds).padStart(2, '0')}.${tenths}`;
     }
 
     requestMenu() {
@@ -348,6 +395,23 @@ export class GameScene extends Phaser.Scene {
             console.error('MenuScene 전환 실패:', error);
             this.menuRequested = false;
         }
+    }
+
+    performGoToResult() {
+        const payload = this.resultData;
+
+        if (!payload) {
+            return;
+        }
+
+        this.resultRequested = false;
+        this.detachCollisionEvents();
+
+        if (this.input?.keyboard && typeof this.input.keyboard.resetKeys === 'function') {
+            this.input.keyboard.resetKeys();
+        }
+
+        this.scene.start('ResultScene', payload);
     }
 
     detachCollisionEvents() {
@@ -566,35 +630,16 @@ export class GameScene extends Phaser.Scene {
         return Math.max(0, Math.floor((this.wheelBody.position.x - this.startX) / 10));
     }
 
-    requestRestart() {
-        if (!this.isGameOver) {
-            return;
-        }
-
-        if (this.isRestarting) {
-            return;
-        }
-
-        this.restartRequested = true;
-    }
-
-    performRestart() {
-        this.restartRequested = false;
-        this.isRestarting = true;
-
-        this.resetRun();
-
-        this.isRestarting = false;
-    }
-
     resetRun() {
         this.clearRunObjects();
 
         this.cameraX = 0;
         this.lastGroundX = 0;
+        this.finishLineX = 0;
 
         this.isGameOver = false;
-        this.lastResultSaved = false;
+        this.resultRequested = false;
+        this.resultData = null;
         this.menuRequested = false;
 
         this.groundPoints = [];
@@ -620,11 +665,19 @@ export class GameScene extends Phaser.Scene {
             this.brakeText.setText('');
         }
 
+        if (this.finishText) {
+            this.finishText.setVisible(false);
+        }
+
         this.cameras.main.scrollX = 0;
         this.cameras.main.scrollY = 0;
 
         if (this.distanceText) {
             this.distanceText.setText('DIST: 0');
+        }
+
+        if (this.timeText) {
+            this.timeText.setText('TIME: 0:00.0');
         }
 
         this.buildGroundFromMarketData();
@@ -642,6 +695,8 @@ export class GameScene extends Phaser.Scene {
                 density: 0.0027
             }
         );
+
+        this.runStartedAt = this.time.now;
 
         this.drawTerrain();
         this.drawWheel();
@@ -690,6 +745,7 @@ export class GameScene extends Phaser.Scene {
         }
 
         this.lastGroundX = sourcePoints[sourcePoints.length - 1].x;
+        this.finishLineX = this.lastGroundX;
     }
 
     clearRunObjects() {
@@ -836,150 +892,22 @@ export class GameScene extends Phaser.Scene {
             return;
         }
 
+        const finished = reason === 'FINISH';
+        const elapsedMs = this.getElapsedMs();
+
         this.isGameOver = true;
         this.clearBrakeChallenge(false);
-        this.saveLocalResult(distance, reason);
 
-        const cx = this.cameras.main.scrollX + 640;
-
-        const panel = this.add.rectangle(cx, 360, 740, 300, 0x000000, 0.74);
-
-        const t1 = this.add.text(cx, 260, reason, {
-            fontFamily: 'Arial',
-            fontSize: '42px',
-            color: '#ffffff'
-        }).setOrigin(0.5);
-
-        const t2 = this.add.text(cx, 317, `DISTANCE: ${distance}`, {
-            fontFamily: 'Arial',
-            fontSize: '28px',
-            color: '#f8fafc'
-        }).setOrigin(0.5);
-
-        const mapId = this.marketTerrainData?.mapId || 'unknown map';
-
-        const record = this.getBestRecord(mapId);
-        const recordText = record
-            ? `LOCAL BEST: ${record.bestDistance} / ATTEMPTS: ${record.attempts}`
-            : 'LOCAL BEST: -';
-
-        const t3 = this.add.text(cx, 360, recordText, {
-            fontFamily: 'Arial',
-            fontSize: '20px',
-            color: '#fbbf24'
-        }).setOrigin(0.5);
-
-        const t4 = this.add.text(cx, 397, mapId, {
-            fontFamily: 'Arial',
-            fontSize: '17px',
-            color: '#93c5fd'
-        }).setOrigin(0.5);
-
-        const t5 = this.add.text(cx, 432, 'R / Enter: restart     M: menu', {
-            fontFamily: 'Arial',
-            fontSize: '20px',
-            color: '#cbd5e1'
-        }).setOrigin(0.5);
-
-        const restartButton = this.createGameOverButton(
-            cx - 130,
-            485,
-            220,
-            48,
-            'RESTART',
-            () => {
-                this.requestRestart();
-            }
-        );
-
-        const menuButton = this.createGameOverButton(
-            cx + 130,
-            485,
-            220,
-            48,
-            'MENU',
-            () => {
-                this.requestMenu();
-            }
-        );
-
-        this.gameOverUi.push(panel, t1, t2, t3, t4, t5, restartButton, menuButton);
-    }
-
-    createGameOverButton(x, y, width, height, label, onClick) {
-        const container = this.add.container(x, y);
-
-        const bg = this.add.rectangle(0, 0, width, height, 0x1e293b, 1)
-            .setStrokeStyle(2, 0x64748b, 1)
-            .setInteractive({ useHandCursor: true });
-
-        const text = this.add.text(0, 0, label, {
-            fontFamily: 'Arial',
-            fontSize: '20px',
-            color: '#ffffff'
-        }).setOrigin(0.5);
-
-        container.add(bg);
-        container.add(text);
-
-        bg.on('pointerover', () => {
-            bg.setFillStyle(0x334155, 1);
-            bg.setStrokeStyle(2, 0x93c5fd, 1);
-        });
-
-        bg.on('pointerout', () => {
-            bg.setFillStyle(0x1e293b, 1);
-            bg.setStrokeStyle(2, 0x64748b, 1);
-        });
-
-        bg.on('pointerdown', () => {
-            onClick();
-        });
-
-        return container;
-    }
-
-    saveLocalResult(distance, reason) {
-        if (this.lastResultSaved) {
-            return;
-        }
-
-        this.lastResultSaved = true;
-
-        const mapId = this.marketTerrainData?.mapId || this.currentMapMeta?.mapId || 'unknown-map';
-        const key = `tm_best_${mapId}`;
-
-        let previous = null;
-
-        try {
-            const raw = localStorage.getItem(key);
-            previous = raw ? JSON.parse(raw) : null;
-        } catch {
-            previous = null;
-        }
-
-        const attempts = (previous?.attempts || 0) + 1;
-        const bestDistance = Math.max(previous?.bestDistance || 0, distance);
-
-        const next = {
-            mapId,
-            bestDistance,
-            lastDistance: distance,
-            attempts,
-            lastReason: reason,
-            updatedAt: new Date().toISOString()
+        this.resultData = {
+            mapMeta: this.currentMapMeta,
+            mapData: this.marketTerrainData,
+            distance,
+            reason,
+            finished,
+            elapsedMs
         };
 
-        localStorage.setItem(key, JSON.stringify(next));
-    }
-
-    getBestRecord(mapId) {
-        try {
-            const raw = localStorage.getItem(`tm_best_${mapId}`);
-            return raw ? JSON.parse(raw) : null;
-        } catch {
-            return null;
-        }
+        this.resultRequested = true;
     }
 
     drawTerrain() {
@@ -1023,6 +951,33 @@ export class GameScene extends Phaser.Scene {
         }
 
         g.strokePath();
+
+        this.drawFinishMarker(g, left, right);
+    }
+
+    drawFinishMarker(g, left, right) {
+        if (!this.finishLineX) {
+            return;
+        }
+
+        const visible = this.finishLineX >= left && this.finishLineX <= right;
+
+        if (!visible) {
+            if (this.finishText) {
+                this.finishText.setVisible(false);
+            }
+
+            return;
+        }
+
+        g.lineStyle(5, 0xfbbf24, 1);
+        g.lineBetween(this.finishLineX, 220, this.finishLineX, 700);
+
+        if (this.finishText) {
+            this.finishText
+                .setPosition(this.finishLineX, 205)
+                .setVisible(true);
+        }
     }
 
     drawWheel() {

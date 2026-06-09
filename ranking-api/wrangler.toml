@@ -1,0 +1,12 @@
+name = "trademill-ranking-api"
+main = "src/index.js"
+compatibility_date = "2026-05-10"
+account_id = "e25deb9d75be0bef30c58616286c6cc5"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "trademill_rankings"
+database_id = "7661e1e8-99d8-4cc9-8fa1-7f48e1743d4c"
+
+[secrets]
+required = [ "RATE_LIMIT_SECRET" ]
