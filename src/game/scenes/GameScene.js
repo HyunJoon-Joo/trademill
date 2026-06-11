@@ -22,7 +22,6 @@ export class GameScene extends Phaser.Scene {
         this.runStartedAt = 0;
 
         this.isGameOver = false;
-        this.isRestarting = false;
         this.restartRequested = false;
         this.menuRequested = false;
         this.resultRequested = false;
@@ -43,12 +42,10 @@ export class GameScene extends Phaser.Scene {
         this.infoText = null;
         this.marketInfoText = null;
         this.loadingText = null;
-        this.brakeText = null;
+        this.statusText = null;
 
         this.cursors = null;
         this.jumpKey = null;
-        this.restartKey = null;
-        this.enterKey = null;
         this.menuKey = null;
 
         this.groundContactCount = 0;
@@ -61,17 +58,15 @@ export class GameScene extends Phaser.Scene {
         this.maxFallDistance = 0;
         this.spawnGraceUntil = 0;
 
-        this.dangerVelocityY = 8.8;
+        /*
+          낙하 사망 기준.
+          자유낙하로 세게 떨어지면 좌/하 입력과 무관하게 죽는다.
+        */
         this.fatalVelocityY = 17.5;
-
-        this.dangerFallDistance = 120;
         this.fatalFallDistance = 330;
 
-        this.brakeChallengeActive = false;
-        this.brakeChallengeUntil = 0;
-        this.brakeTapsRequired = 0;
-        this.brakeTapsDone = 0;
-        this.brakeChallengeDurationMs = 1050;
+        this.hardLandingVelocityY = 10.5;
+        this.hardLandingFallDistance = 150;
 
         this.lastBrakeTapAt = -99999;
         this.brakeTapCooldownMs = 45;
@@ -112,7 +107,7 @@ export class GameScene extends Phaser.Scene {
         this.infoText = this.add.text(
             24,
             104,
-            'RIGHT tap/hold: climb  /  LEFT tap on ground: brake  /  SPACE or UP: jump  /  Reach FINISH to clear the map',
+            'RIGHT tap/hold: climb  /  LEFT hold: reverse + brake by friction  /  DOWN hold: grip  /  SPACE or UP: jump',
             {
                 fontFamily: 'Arial',
                 fontSize: '18px',
@@ -121,9 +116,9 @@ export class GameScene extends Phaser.Scene {
             }
         ).setScrollFactor(0);
 
-        this.brakeText = this.add.text(640, 144, '', {
+        this.statusText = this.add.text(640, 144, '', {
             fontFamily: 'Arial',
-            fontSize: '32px',
+            fontSize: '30px',
             color: '#fbbf24',
             align: 'center'
         }).setOrigin(0.5).setScrollFactor(0);
@@ -137,8 +132,6 @@ export class GameScene extends Phaser.Scene {
 
         this.cursors = this.input.keyboard.createCursorKeys();
         this.jumpKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
-        this.restartKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
-        this.enterKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
         this.menuKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.M);
 
         this.terrainGraphics = this.add.graphics();
@@ -277,8 +270,12 @@ export class GameScene extends Phaser.Scene {
             ? ` / difficulty=${mapData.difficulty.score}`
             : '';
 
+        const range = mapData.priceScale?.priceRangePct
+            ? ` / range=${mapData.priceScale.priceRangePct}%`
+            : '';
+
         this.marketInfoText.setText(
-            `MAP: ${mapData.mapId || 'unknown'} / ${mapData.symbol} / ${mapData.interval} / bars=${mapData.barsUsed}${difficulty}`
+            `MAP: ${mapData.mapId || 'unknown'} / ${mapData.symbol} / ${mapData.interval} / bars=${mapData.barsUsed}${difficulty}${range}`
         );
     }
 
@@ -299,11 +296,7 @@ export class GameScene extends Phaser.Scene {
             return;
         }
 
-        if (!this.worldReady) {
-            return;
-        }
-
-        if (!this.wheelBody) {
+        if (!this.worldReady || !this.wheelBody) {
             return;
         }
 
@@ -320,7 +313,7 @@ export class GameScene extends Phaser.Scene {
         this.trackAirborneFall();
 
         this.handleInput();
-        this.updateBrakeChallenge();
+        this.updateMovementStatus();
 
         this.drawTerrain();
         this.drawWheel();
@@ -345,6 +338,36 @@ export class GameScene extends Phaser.Scene {
         ) {
             this.gameOver(distance, 'OUT OF MARKET');
         }
+    }
+
+    updateMovementStatus() {
+        if (!this.statusText || !this.wheelBody) {
+            return;
+        }
+
+        const grounded = this.isGrounded();
+        const leftHeld = this.cursors.left.isDown;
+        const downHeld = this.cursors.down.isDown;
+
+        if (grounded && leftHeld && downHeld) {
+            this.statusText.setText('GRIP BRAKE');
+            this.statusText.setColor('#fbbf24');
+            return;
+        }
+
+        if (grounded && leftHeld) {
+            this.statusText.setText('REVERSE');
+            this.statusText.setColor('#93c5fd');
+            return;
+        }
+
+        if (grounded && downHeld) {
+            this.statusText.setText('GRIP');
+            this.statusText.setColor('#a7f3d0');
+            return;
+        }
+
+        this.statusText.setText('');
     }
 
     hasReachedFinish() {
@@ -478,34 +501,17 @@ export class GameScene extends Phaser.Scene {
             return;
         }
 
-        const dangerousLanding =
-            landingVelocityY >= this.dangerVelocityY ||
-            fallDistance >= this.dangerFallDistance;
+        const hardLanding =
+            landingVelocityY >= this.hardLandingVelocityY ||
+            fallDistance >= this.hardLandingFallDistance;
 
-        if (dangerousLanding) {
-            this.startBrakeChallenge(landingVelocityY, fallDistance);
+        if (hardLanding) {
+            this.applyHardLandingStabilizer();
+            this.flashStatus('HARD LANDING', '#f87171', 500);
         }
     }
 
-    startBrakeChallenge(landingVelocityY, fallDistance) {
-        const impactScore = landingVelocityY + fallDistance / 60;
-
-        this.brakeChallengeActive = true;
-        this.brakeChallengeUntil = this.time.now + this.brakeChallengeDurationMs;
-
-        this.brakeTapsRequired = Phaser.Math.Clamp(
-            Math.ceil(impactScore / 4),
-            2,
-            7
-        );
-
-        this.brakeTapsDone = 0;
-
-        this.applyLandingStabilizer();
-        this.updateBrakeText();
-    }
-
-    applyLandingStabilizer() {
+    applyHardLandingStabilizer() {
         if (!this.wheelBody) {
             return;
         }
@@ -513,106 +519,101 @@ export class GameScene extends Phaser.Scene {
         const Body = Phaser.Physics.Matter.Matter.Body;
 
         Body.setVelocity(this.wheelBody, {
-            x: this.wheelBody.velocity.x * 0.82,
-            y: Math.min(this.wheelBody.velocity.y * 0.65, 7.5)
+            x: this.wheelBody.velocity.x * 0.88,
+            y: Math.min(this.wheelBody.velocity.y * 0.78, 8.2)
         });
+
+        Body.setAngularVelocity(this.wheelBody, this.wheelBody.angularVelocity * 0.8);
+    }
+
+    flashStatus(text, color = '#fbbf24', duration = 450) {
+        if (!this.statusText) {
+            return;
+        }
+
+        this.statusText.setText(text);
+        this.statusText.setColor(color);
+
+        this.time.delayedCall(duration, () => {
+            if (this.statusText && this.statusText.text === text) {
+                this.statusText.setText('');
+            }
+        });
+    }
+
+    applyLeftGroundControl(Body, downHeld) {
+        const vx = this.wheelBody.velocity.x;
+        const vy = this.wheelBody.velocity.y;
+
+        /*
+          LEFT는 실제 후진/역회전.
+          오른쪽으로 빠르게 내려가던 중이면 마찰성 감속.
+          충분히 느려지면 실제로 왼쪽으로 움직일 수 있음.
+        */
+        Body.applyForce(
+            this.wheelBody,
+            this.wheelBody.position,
+            { x: downHeld ? -0.00078 : -0.00058, y: 0 }
+        );
 
         Body.setAngularVelocity(
             this.wheelBody,
-            this.wheelBody.angularVelocity * 0.72
+            Phaser.Math.Clamp(
+                this.wheelBody.angularVelocity - (downHeld ? 0.014 : 0.010),
+                -2.8,
+                2.8
+            )
+        );
+
+        if (vx > 0) {
+            Body.setVelocity(this.wheelBody, {
+                x: vx * (downHeld ? 0.925 : 0.965),
+                y: vy > 0 ? vy * (downHeld ? 0.965 : 0.985) : vy
+            });
+        } else {
+            Body.setVelocity(this.wheelBody, {
+                x: Phaser.Math.Clamp(vx - (downHeld ? 0.018 : 0.010), -4.5, 6),
+                y: vy
+            });
+        }
+
+        Body.setAngularVelocity(
+            this.wheelBody,
+            this.wheelBody.angularVelocity * (downHeld ? 0.92 : 0.97)
         );
     }
 
-    updateBrakeChallenge() {
-        if (!this.brakeChallengeActive) {
-            if (this.brakeText) {
-                this.brakeText.setText('');
-            }
-
+    applyDownGrip(Body) {
+        if (!this.wheelBody || !this.isGrounded()) {
             return;
         }
 
-        this.updateBrakeText();
+        const vx = this.wheelBody.velocity.x;
+        const vy = this.wheelBody.velocity.y;
 
-        if (this.brakeTapsDone >= this.brakeTapsRequired) {
-            this.clearBrakeChallenge(true);
-            return;
-        }
+        /*
+          DOWN은 지면 접촉 중 grip/brace.
+          자유낙하 중에는 구원 버튼이 아님.
+        */
+        Body.setVelocity(this.wheelBody, {
+            x: vx * 0.975,
+            y: vy > 0 ? vy * 0.94 : vy
+        });
 
-        if (this.time.now > this.brakeChallengeUntil) {
-            this.gameOver(this.getDistance(), 'MARKET CRASH');
-        }
+        Body.setAngularVelocity(this.wheelBody, this.wheelBody.angularVelocity * 0.93);
     }
 
-    updateBrakeText() {
-        if (!this.brakeText || !this.brakeChallengeActive) {
-            return;
-        }
+    applyAirLeftControl(Body) {
+        Body.applyForce(
+            this.wheelBody,
+            this.wheelBody.position,
+            { x: -0.00008, y: 0 }
+        );
 
-        const remainMs = Math.max(0, this.brakeChallengeUntil - this.time.now);
-        const remainSec = (remainMs / 1000).toFixed(1);
-        const left = Math.max(0, this.brakeTapsRequired - this.brakeTapsDone);
-
-        this.brakeText.setText(`BRAKE! TAP LEFT x${left}\n${remainSec}s`);
-    }
-
-    clearBrakeChallenge(success) {
-        this.brakeChallengeActive = false;
-        this.brakeChallengeUntil = 0;
-        this.brakeTapsRequired = 0;
-        this.brakeTapsDone = 0;
-
-        if (this.brakeText) {
-            this.brakeText.setText(success ? 'SAVED' : '');
-        }
-
-        if (success) {
-            this.time.delayedCall(450, () => {
-                if (this.brakeText && !this.brakeChallengeActive) {
-                    this.brakeText.setText('');
-                }
-            });
-        }
-    }
-
-    applyBrakeTap() {
-        if (!this.wheelBody) {
-            return;
-        }
-
-        if (this.time.now - this.lastBrakeTapAt < this.brakeTapCooldownMs) {
-            return;
-        }
-
-        this.lastBrakeTapAt = this.time.now;
-
-        const Body = Phaser.Physics.Matter.Matter.Body;
-        const grounded = this.isGrounded();
-
-        if (grounded) {
-            Body.setVelocity(this.wheelBody, {
-                x: this.wheelBody.velocity.x * 0.64 - 0.10,
-                y: this.wheelBody.velocity.y > 0
-                    ? this.wheelBody.velocity.y * 0.62
-                    : this.wheelBody.velocity.y
-            });
-
-            Body.setAngularVelocity(
-                this.wheelBody,
-                this.wheelBody.angularVelocity * 0.46
-            );
-
-            if (this.brakeChallengeActive) {
-                this.brakeTapsDone += 1;
-                this.updateBrakeText();
-            }
-        } else {
-            Body.applyForce(
-                this.wheelBody,
-                this.wheelBody.position,
-                { x: -0.00011, y: 0 }
-            );
-        }
+        Body.setAngularVelocity(
+            this.wheelBody,
+            Phaser.Math.Clamp(this.wheelBody.angularVelocity - 0.002, -2.4, 2.4)
+        );
     }
 
     isGrounded() {
@@ -655,14 +656,10 @@ export class GameScene extends Phaser.Scene {
         this.maxFallDistance = 0;
         this.spawnGraceUntil = this.time.now + 1000;
 
-        this.brakeChallengeActive = false;
-        this.brakeChallengeUntil = 0;
-        this.brakeTapsRequired = 0;
-        this.brakeTapsDone = 0;
         this.lastBrakeTapAt = -99999;
 
-        if (this.brakeText) {
-            this.brakeText.setText('');
+        if (this.statusText) {
+            this.statusText.setText('');
         }
 
         if (this.finishText) {
@@ -689,8 +686,8 @@ export class GameScene extends Phaser.Scene {
             {
                 label: 'wheel',
                 restitution: 0.0,
-                friction: 0.48,
-                frictionStatic: 36,
+                friction: 0.54,
+                frictionStatic: 44,
                 frictionAir: 0.02,
                 density: 0.0027
             }
@@ -737,7 +734,7 @@ export class GameScene extends Phaser.Scene {
                     isStatic: true,
                     angle,
                     friction: 1.0,
-                    frictionStatic: 44
+                    frictionStatic: 48
                 }
             );
 
@@ -795,7 +792,11 @@ export class GameScene extends Phaser.Scene {
         const Body = Phaser.Physics.Matter.Matter.Body;
         const grounded = this.isGrounded();
 
-        if (this.cursors.right.isDown) {
+        const rightHeld = this.cursors.right.isDown;
+        const leftHeld = this.cursors.left.isDown;
+        const downHeld = this.cursors.down.isDown;
+
+        if (rightHeld) {
             Body.applyForce(
                 this.wheelBody,
                 this.wheelBody.position,
@@ -839,33 +840,17 @@ export class GameScene extends Phaser.Scene {
             );
         }
 
-        if (this.cursors.left.isDown) {
+        if (leftHeld) {
             if (grounded) {
-                Body.setVelocity(this.wheelBody, {
-                    x: this.wheelBody.velocity.x * 0.985 - 0.004,
-                    y: this.wheelBody.velocity.y > 0
-                        ? this.wheelBody.velocity.y * 0.992
-                        : this.wheelBody.velocity.y
-                });
-
-                Body.setAngularVelocity(
-                    this.wheelBody,
-                    this.wheelBody.angularVelocity * 0.985
-                );
+                this.applyLeftGroundControl(Body, downHeld);
             } else {
-                Body.applyForce(
-                    this.wheelBody,
-                    this.wheelBody.position,
-                    { x: -0.00009, y: 0 }
-                );
+                this.applyAirLeftControl(Body);
             }
+        } else if (downHeld && grounded) {
+            this.applyDownGrip(Body);
         }
 
-        if (Phaser.Input.Keyboard.JustDown(this.cursors.left)) {
-            this.applyBrakeTap();
-        }
-
-        const canJump = grounded;
+        const canJump = grounded && !downHeld;
 
         if (
             (Phaser.Input.Keyboard.JustDown(this.jumpKey) ||
@@ -896,7 +881,6 @@ export class GameScene extends Phaser.Scene {
         const elapsedMs = this.getElapsedMs();
 
         this.isGameOver = true;
-        this.clearBrakeChallenge(false);
 
         this.resultData = {
             mapMeta: this.currentMapMeta,

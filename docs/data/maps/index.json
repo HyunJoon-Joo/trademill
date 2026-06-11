@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-06-10T23:54:12.993Z",
+  "updatedAt": "2026-06-11T04:58:58.351Z",
   "latestMapId": "2026-06-10_IXIC_1m",
   "maps": [
     {
@@ -14,13 +14,15 @@
       "barsUsed": 391,
       "difficulty": {
         "score": 10,
-        "avgStep": 72.35,
-        "maxUphillStep": 95,
-        "maxDropStep": 95,
-        "totalUphill": 14098.92,
-        "totalDrop": 14116.64
+        "avgStep": 13.11,
+        "maxUphillStep": 74.88,
+        "maxDropStep": 61.86,
+        "totalUphill": 2503.61,
+        "totalDrop": 2608.39,
+        "priceRangePct": 2.2274,
+        "heightRangePx": 302.17
       },
-      "generatedAt": "2026-06-10T23:54:12.990Z",
+      "generatedAt": "2026-06-11T04:58:58.347Z",
       "path": "/data/maps/2026-06-10_IXIC_1m.json"
     },
     {
