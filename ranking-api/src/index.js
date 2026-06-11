@@ -393,12 +393,19 @@ async function findMapMeta(mapId) {
   return maps.find((map) => map?.mapId === mapId) || null;
 }
 
+function joinDataUrl(baseUrl, path) {
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  const normalizedPath = String(path || "").replace(/^\/+/, "");
+
+  return `${base}/${normalizedPath}`;
+}
+
 async function loadMapData(mapMeta) {
   if (!mapMeta?.path) {
     return null;
   }
 
-  const url = new URL(mapMeta.path, MAP_DATA_BASE_URL).toString();
+  const url = joinDataUrl(MAP_DATA_BASE_URL, mapMeta.path);
 
   return fetchJson(url);
 }
