@@ -1,8 +1,30 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-06-16T00:08:13.810Z",
-  "latestMapId": "2026-06-15_IXIC_1m",
+  "updatedAt": "2026-06-16T23:53:49.176Z",
+  "latestMapId": "2026-06-16_IXIC_1m",
   "maps": [
+    {
+      "mapId": "2026-06-16_IXIC_1m",
+      "date": "2026-06-16",
+      "marketDate": "2026-06-16",
+      "symbol": "^IXIC",
+      "label": "NASDAQ Composite",
+      "interval": "1m",
+      "mode": "intraday",
+      "barsUsed": 391,
+      "difficulty": {
+        "score": 10,
+        "avgStep": 8.14,
+        "maxUphillStep": 32.25,
+        "maxDropStep": 39.91,
+        "totalUphill": 1500.39,
+        "totalDrop": 1673.18,
+        "priceRangePct": 1.5085,
+        "heightRangePx": 240.04
+      },
+      "generatedAt": "2026-06-16T23:53:49.171Z",
+      "path": "/data/maps/2026-06-16_IXIC_1m.json"
+    },
     {
       "mapId": "2026-06-15_IXIC_1m",
       "date": "2026-06-15",
