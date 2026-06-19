@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-06-19T00:07:46.114Z",
+  "updatedAt": "2026-06-19T23:34:05.902Z",
   "latestMapId": "2026-06-18_IXIC_1m",
   "maps": [
     {
@@ -22,7 +22,7 @@
         "priceRangePct": 1.3706,
         "heightRangePx": 252.32
       },
-      "generatedAt": "2026-06-19T00:07:46.110Z",
+      "generatedAt": "2026-06-19T23:34:05.899Z",
       "path": "/data/maps/2026-06-18_IXIC_1m.json"
     },
     {
