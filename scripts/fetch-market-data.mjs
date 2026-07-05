@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YahooFinance from 'yahoo-finance2';
+import { MARKET_MAP_TUNING } from './config/marketMapTuning.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,74 +15,28 @@ const legacyOutFile = path.join(publicDataDir, 'market-terrain.json');
 
 const yahooFinance = new YahooFinance();
 
-const TRADING_TIME_ZONE = 'America/New_York';
+function getActiveProfile() {
+    const profile = MARKET_MAP_TUNING.profiles[MARKET_MAP_TUNING.activeProfile];
 
-const CANDIDATES = [
-    {
-        symbol: '^IXIC',
-        label: 'NASDAQ Composite',
-        interval: '1m',
-        daysBack: 7,
-        maxBars: 420
-    },
-    {
-        symbol: 'QQQ',
-        label: 'QQQ',
-        interval: '1m',
-        daysBack: 7,
-        maxBars: 420
-    },
-    {
-        symbol: '^IXIC',
-        label: 'NASDAQ Composite',
-        interval: '5m',
-        daysBack: 7,
-        maxBars: 390
-    },
-    {
-        symbol: 'QQQ',
-        label: 'QQQ',
-        interval: '5m',
-        daysBack: 7,
-        maxBars: 390
+    if (!profile) {
+        throw new Error(`알 수 없는 activeProfile: ${MARKET_MAP_TUNING.activeProfile}`);
     }
-];
 
-/*
-  맵 핵심 튜닝값
+    return profile;
+}
 
-  이전 버전:
-  - 그날의 최고/최저를 화면 높이에 강제 정규화
+function makeCandidates() {
+    const profile = getActiveProfile();
 
-  이번 버전:
-  - 기준 가격 대비 실제 변동률을 고정 스케일로 변환
-  - 조용한 날은 조용하고, 크게 흔들린 날은 실제로 더 험해짐
-*/
-const STEP_X = 18;
+    return profile.candidates.map((candidate) => ({
+        ...candidate,
+        interval: MARKET_MAP_TUNING.interval,
+        daysBack: MARKET_MAP_TUNING.daysBack,
+        maxBars: MARKET_MAP_TUNING.maxBars
+    }));
+}
 
-const BASE_Y = 520;
-const MIN_Y = 300;
-const MAX_Y = 675;
-
-/*
-  1.0% 가격 변화가 몇 px 높이 변화가 될지.
-  18000이면 0.01 * 18000 = 180px.
-*/
-const PRICE_PERCENT_TO_PX = 18000;
-
-/*
-  고가/저가의 꼬리, 캔들 몸통에서 오는 작은 요철.
-  너무 크게 하면 실제 차트보다 게임적 노이즈가 강해짐.
-*/
-const WICK_TO_PX = 9000;
-const BODY_TO_PX = 4500;
-const MICRO_NOISE_PX = 5;
-
-/*
-  화면 밖으로 너무 나가면 부드럽게 압축.
-  normalize가 아니라 overflow만 soft compression.
-*/
-const SOFT_LIMIT_POWER = 1.0;
+const CANDIDATES = makeCandidates();
 
 function round(value, digits = 4) {
     const m = 10 ** digits;
@@ -147,6 +102,27 @@ function downsampleEvenly(items, maxCount) {
     return out;
 }
 
+function movingAverage(values, windowSize) {
+    const out = [];
+    const half = Math.max(1, Math.floor(windowSize / 2));
+
+    for (let i = 0; i < values.length; i++) {
+        let sum = 0;
+        let count = 0;
+
+        for (let j = i - half; j <= i + half; j++) {
+            if (j >= 0 && j < values.length) {
+                sum += values[j];
+                count += 1;
+            }
+        }
+
+        out.push(count > 0 ? sum / count : values[i]);
+    }
+
+    return out;
+}
+
 async function fetchChartWithFallback(candidate) {
     const query = {
         period1: new Date(Date.now() - candidate.daysBack * 24 * 60 * 60 * 1000),
@@ -201,7 +177,7 @@ function selectLatestMarketDayBars(allBars, candidate) {
     const groups = new Map();
 
     for (const bar of allBars) {
-        const marketDate = formatDateInTimeZone(bar.time, TRADING_TIME_ZONE);
+        const marketDate = formatDateInTimeZone(bar.time, candidate.timeZone);
 
         if (!groups.has(marketDate)) {
             groups.set(marketDate, []);
@@ -219,9 +195,6 @@ function selectLatestMarketDayBars(allBars, candidate) {
     let selectedDate = dates[dates.length - 1];
     let selectedBars = groups.get(selectedDate);
 
-    /*
-      장 시작 직후 너무 짧은 데이터면 직전 거래일 사용.
-    */
     if (selectedBars.length < 60 && dates.length >= 2) {
         selectedDate = dates[dates.length - 2];
         selectedBars = groups.get(selectedDate);
@@ -265,6 +238,7 @@ async function getMarketBars() {
                 interval: candidate.interval,
                 mode: candidate.interval.endsWith('m') ? 'intraday' : 'daily',
                 marketDate: selected.marketDate,
+                timeZone: candidate.timeZone,
                 bars: selected.bars
             };
         } catch (error) {
@@ -283,30 +257,51 @@ async function getMarketBars() {
     );
 }
 
-function softLimitY(y) {
-    /*
-      여기서 중요한 점:
-      전체 데이터의 min/max로 normalize하지 않는다.
-      단지 화면 밖으로 너무 나가는 극단값만 부드럽게 압축한다.
-    */
-    if (y >= MIN_Y && y <= MAX_Y) {
-        return y;
+function shapeYValues(rawYValues) {
+    if (rawYValues.length <= 1) {
+        return rawYValues;
     }
 
-    if (y < MIN_Y) {
-        const overflow = MIN_Y - y;
-        const compressed = Math.pow(overflow, SOFT_LIMIT_POWER) * 0.32;
-        return clamp(MIN_Y + compressed, MIN_Y, BASE_Y);
+    const shaped = [rawYValues[0]];
+
+    for (let i = 1; i < rawYValues.length; i++) {
+        const rawPrev = rawYValues[i - 1];
+        const rawCurrent = rawYValues[i];
+        const rawDy = rawCurrent - rawPrev;
+
+        let dy = rawDy * MARKET_MAP_TUNING.stepDyGain;
+
+        if (
+            Math.abs(rawDy) > 1.5 &&
+            Math.abs(dy) < MARKET_MAP_TUNING.minVisibleStepY
+        ) {
+            dy = Math.sign(dy || rawDy) * MARKET_MAP_TUNING.minVisibleStepY;
+        }
+
+        dy = clamp(
+            dy,
+            -MARKET_MAP_TUNING.maxStepY,
+            MARKET_MAP_TUNING.maxStepY
+        );
+
+        const stepBasedY = shaped[i - 1] + dy;
+
+        const blendedY =
+            stepBasedY * (1 - MARKET_MAP_TUNING.rawBlend) +
+            rawCurrent * MARKET_MAP_TUNING.rawBlend;
+
+        const finalY = MARKET_MAP_TUNING.hardClamp
+            ? clamp(blendedY, MARKET_MAP_TUNING.minY, MARKET_MAP_TUNING.maxY)
+            : blendedY;
+
+        shaped.push(finalY);
     }
 
-    const overflow = y - MAX_Y;
-    const compressed = Math.pow(overflow, SOFT_LIMIT_POWER) * 0.32;
-    return clamp(MAX_Y - compressed, BASE_Y, MAX_Y);
+    return shaped;
 }
 
 function buildTerrainData(result) {
     const bars = result.bars;
-
     const first = bars[0];
     const referencePrice = first.open || first.close;
 
@@ -314,55 +309,77 @@ function buildTerrainData(result) {
         throw new Error('기준 가격을 만들 수 없습니다.');
     }
 
-    const mapId = `${result.marketDate}_${result.safeSymbol}_${result.interval}`;
+    const mapId = `${result.marketDate}_${result.safeSymbol}_${result.interval}_${MARKET_MAP_TUNING.mapAlgorithmVersion}`;
+
+    const closeMoves = bars.map((bar) => {
+        return (bar.close - referencePrice) / referencePrice;
+    });
+
+    const trendMoves = movingAverage(
+        closeMoves,
+        MARKET_MAP_TUNING.movingAverageWindow
+    );
+
+    const rawYValues = [];
 
     let minClose = Number.POSITIVE_INFINITY;
     let maxClose = Number.NEGATIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-
-    const points = [];
 
     for (let i = 0; i < bars.length; i++) {
         const bar = bars[i];
+        const prevClose = i > 0 ? bars[i - 1].close : bar.open;
 
-        const closeMove = (bar.close - referencePrice) / referencePrice;
+        const closeMove = closeMoves[i];
+        const trendMove = trendMoves[i];
+        const localMove = closeMove - trendMove;
+
+        const deltaMove = (bar.close - prevClose) / referencePrice;
         const bodyMove = (bar.close - bar.open) / referencePrice;
 
-        const upperWick = (bar.high - Math.max(bar.open, bar.close)) / referencePrice;
-        const lowerWick = (Math.min(bar.open, bar.close) - bar.low) / referencePrice;
-        const wickBias = lowerWick - upperWick;
+        const upperWick =
+            (bar.high - Math.max(bar.open, bar.close)) / referencePrice;
 
+        const lowerWick =
+            (Math.min(bar.open, bar.close) - bar.low) / referencePrice;
+
+        const wickBias = lowerWick - upperWick;
         const noise = deterministicNoise(i + Math.floor(bar.close * 100));
 
-        /*
-          차트형 지형:
-          - 가격이 오르면 화면상 위로 감(y 감소)
-          - 가격이 내리면 화면상 아래로 감(y 증가)
-          - 고정 비율 스케일이라 날마다 진폭이 달라짐
-        */
         let y =
-            BASE_Y -
-            closeMove * PRICE_PERCENT_TO_PX -
-            bodyMove * BODY_TO_PX -
-            wickBias * WICK_TO_PX +
-            noise * MICRO_NOISE_PX;
+            MARKET_MAP_TUNING.baseY -
+            closeMove * MARKET_MAP_TUNING.trendToPx -
+            localMove * MARKET_MAP_TUNING.localDeviationToPx -
+            deltaMove * MARKET_MAP_TUNING.deltaToPx -
+            bodyMove * MARKET_MAP_TUNING.bodyToPx -
+            wickBias * MARKET_MAP_TUNING.wickToPx +
+            noise * MARKET_MAP_TUNING.microNoisePx;
 
-        y = softLimitY(y);
-        y = clamp(y, MIN_Y, MAX_Y);
+        if (MARKET_MAP_TUNING.hardClamp) {
+            y = clamp(y, MARKET_MAP_TUNING.minY, MARKET_MAP_TUNING.maxY);
+        }
 
         minClose = Math.min(minClose, bar.close);
         maxClose = Math.max(maxClose, bar.close);
+
+        rawYValues.push(y);
+    }
+
+    const shapedYValues = shapeYValues(rawYValues);
+
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+
+    const points = shapedYValues.map((y, i) => {
         minY = Math.min(minY, y);
         maxY = Math.max(maxY, y);
 
-        points.push({
+        return {
             index: i,
-            time: bar.time,
-            x: i * STEP_X,
+            time: bars[i].time,
+            x: i * MARKET_MAP_TUNING.stepX,
             y: round(y, 2)
-        });
-    }
+        };
+    });
 
     const priceRangePct = ((maxClose - minClose) / referencePrice) * 100;
     const heightRangePx = maxY - minY;
@@ -373,7 +390,7 @@ function buildTerrainData(result) {
     });
 
     return {
-        schemaVersion: 2,
+        schemaVersion: 4,
         mapId,
         date: result.marketDate,
         marketDate: result.marketDate,
@@ -382,16 +399,31 @@ function buildTerrainData(result) {
         label: result.label,
         interval: result.interval,
         mode: result.mode,
+        timeZone: result.timeZone,
         barsUsed: bars.length,
-        stepX: STEP_X,
+        stepX: MARKET_MAP_TUNING.stepX,
         generatedAt: new Date().toISOString(),
-        minY: MIN_Y,
-        maxY: MAX_Y,
-        baseY: BASE_Y,
-        chartMode: 'price-anchored',
+        minY: MARKET_MAP_TUNING.minY,
+        maxY: MARKET_MAP_TUNING.maxY,
+        baseY: MARKET_MAP_TUNING.baseY,
+        chartMode: 'price-anchored-volatility-shaped',
+        mapAlgorithmVersion: MARKET_MAP_TUNING.mapAlgorithmVersion,
+        activeProfile: MARKET_MAP_TUNING.activeProfile,
+        terrainTuning: {
+            stepX: MARKET_MAP_TUNING.stepX,
+            trendToPx: MARKET_MAP_TUNING.trendToPx,
+            localDeviationToPx: MARKET_MAP_TUNING.localDeviationToPx,
+            deltaToPx: MARKET_MAP_TUNING.deltaToPx,
+            bodyToPx: MARKET_MAP_TUNING.bodyToPx,
+            wickToPx: MARKET_MAP_TUNING.wickToPx,
+            movingAverageWindow: MARKET_MAP_TUNING.movingAverageWindow,
+            stepDyGain: MARKET_MAP_TUNING.stepDyGain,
+            minVisibleStepY: MARKET_MAP_TUNING.minVisibleStepY,
+            maxStepY: MARKET_MAP_TUNING.maxStepY,
+            rawBlend: MARKET_MAP_TUNING.rawBlend
+        },
         priceScale: {
             reference: 'first open',
-            pricePercentToPx: PRICE_PERCENT_TO_PX,
             priceRangePct: round(priceRangePct, 4),
             heightRangePx: round(heightRangePx, 2)
         },
@@ -413,10 +445,6 @@ function calculateDifficulty(points, extra = {}) {
 
         totalAbs += abs;
 
-        /*
-          y 감소 = 화면상 위로 올라감 = 오르막
-          y 증가 = 화면상 아래로 떨어짐 = 낙하 위험
-        */
         if (dy < 0) {
             totalUphill += Math.abs(dy);
             maxUphillStep = Math.max(maxUphillStep, Math.abs(dy));
@@ -482,6 +510,7 @@ function upsertMapEntry(index, terrain) {
         label: terrain.label,
         interval: terrain.interval,
         mode: terrain.mode,
+        timeZone: terrain.timeZone,
         barsUsed: terrain.barsUsed,
         difficulty: terrain.difficulty,
         generatedAt: terrain.generatedAt,
@@ -508,7 +537,8 @@ function upsertMapEntry(index, terrain) {
 }
 
 async function main() {
-    console.log('가격 기준 1분봉 시장 맵 생성 시작...');
+    console.log('변동성 강화 시장 맵 생성 시작...');
+    console.log(`activeProfile=${MARKET_MAP_TUNING.activeProfile}`);
 
     const market = await getMarketBars();
     const terrain = buildTerrainData(market);
@@ -528,14 +558,17 @@ async function main() {
     console.log('');
     console.log('완료');
     console.log(`mapId=${terrain.mapId}`);
+    console.log(`profile=${terrain.activeProfile}`);
     console.log(`date=${terrain.date}`);
     console.log(`symbol=${terrain.symbol}`);
     console.log(`interval=${terrain.interval}`);
+    console.log(`timeZone=${terrain.timeZone}`);
     console.log(`barsUsed=${terrain.barsUsed}`);
     console.log(`points=${terrain.points.length}`);
     console.log(`difficulty=${terrain.difficulty.score}`);
     console.log(`priceRangePct=${terrain.priceScale.priceRangePct}%`);
     console.log(`heightRangePx=${terrain.priceScale.heightRangePx}px`);
+    console.log(`stepX=${terrain.stepX}`);
     console.log(`파일 생성: ${mapFile}`);
     console.log(`인덱스 갱신: ${indexFile}`);
 }

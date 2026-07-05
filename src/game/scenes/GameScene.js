@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import { getDataUrl } from '../config/dataConfig';
+import { GAME_TUNING } from '../config/gameTuning';
+import { PLAYER_TUNING } from '../config/playerTuning';
 
 export class GameScene extends Phaser.Scene {
     constructor() {
@@ -9,20 +11,19 @@ export class GameScene extends Phaser.Scene {
     init(data = {}) {
         this.selectedMapMeta = data.mapMeta || null;
 
-        this.scrollSpeed = 88;
+        this.scrollSpeed = GAME_TUNING.world.scrollSpeed;
 
-        this.startX = 180;
-        this.wheelRadius = 28;
+        this.startX = GAME_TUNING.world.startX;
+        this.wheelRadius = PLAYER_TUNING.wheel.radius;
 
         this.cameraX = 0;
         this.lastGroundX = 0;
         this.finishLineX = 0;
-        this.finishMargin = 80;
+        this.finishMargin = GAME_TUNING.world.finishMargin;
 
         this.runStartedAt = 0;
 
         this.isGameOver = false;
-        this.restartRequested = false;
         this.menuRequested = false;
         this.resultRequested = false;
         this.resultData = null;
@@ -58,19 +59,6 @@ export class GameScene extends Phaser.Scene {
         this.maxFallDistance = 0;
         this.spawnGraceUntil = 0;
 
-        /*
-          낙하 사망 기준.
-          자유낙하로 세게 떨어지면 좌/하 입력과 무관하게 죽는다.
-        */
-        this.fatalVelocityY = 17.5;
-        this.fatalFallDistance = 330;
-
-        this.hardLandingVelocityY = 10.5;
-        this.hardLandingFallDistance = 150;
-
-        this.lastBrakeTapAt = -99999;
-        this.brakeTapCooldownMs = 45;
-
         this.onCollisionStart = null;
         this.onCollisionEnd = null;
 
@@ -82,8 +70,8 @@ export class GameScene extends Phaser.Scene {
         this.cameras.main.setRoundPixels(true);
         this.cameras.main.setBackgroundColor('#0f172a');
 
-        this.add.rectangle(0, 0, 50000, 720, 0x0f172a).setOrigin(0, 0);
-        this.add.rectangle(0, 520, 50000, 400, 0x111827).setOrigin(0, 0);
+        this.add.rectangle(0, -4000, 120000, 10000, 0x0f172a).setOrigin(0, 0);
+        this.add.rectangle(0, 520, 120000, 5000, 0x111827).setOrigin(0, 0);
 
         this.distanceText = this.add.text(24, 20, 'DIST: 0', {
             fontFamily: 'Arial',
@@ -107,7 +95,7 @@ export class GameScene extends Phaser.Scene {
         this.infoText = this.add.text(
             24,
             104,
-            'RIGHT tap/hold: climb  /  LEFT hold: reverse + brake by friction  /  DOWN hold: grip  /  SPACE or UP: jump',
+            'RIGHT tap/hold: climb  /  LEFT hold: reverse + friction brake  /  DOWN hold: grip  /  SPACE or UP: jump',
             {
                 fontFamily: 'Arial',
                 fontSize: '18px',
@@ -234,7 +222,9 @@ export class GameScene extends Phaser.Scene {
                 );
             }
 
-            this.marketInfoText.setText('MARKET: failed to load selected map');
+            if (this.marketInfoText) {
+                this.marketInfoText.setText('MARKET: failed to load selected map');
+            }
         }
     }
 
@@ -274,8 +264,16 @@ export class GameScene extends Phaser.Scene {
             ? ` / range=${mapData.priceScale.priceRangePct}%`
             : '';
 
+        const height = mapData.priceScale?.heightRangePx
+            ? ` / height=${mapData.priceScale.heightRangePx}px`
+            : '';
+
+        const stepX = mapData.stepX
+            ? ` / stepX=${mapData.stepX}`
+            : '';
+
         this.marketInfoText.setText(
-            `MAP: ${mapData.mapId || 'unknown'} / ${mapData.symbol} / ${mapData.interval} / bars=${mapData.barsUsed}${difficulty}${range}`
+            `MAP: ${mapData.mapId || 'unknown'} / ${mapData.symbol} / ${mapData.interval} / bars=${mapData.barsUsed}${difficulty}${range}${height}${stepX}`
         );
     }
 
@@ -307,11 +305,15 @@ export class GameScene extends Phaser.Scene {
 
         const dt = delta / 1000;
 
-        this.cameraX += this.scrollSpeed * dt;
-        this.cameras.main.scrollX = Math.max(0, this.cameraX - 160);
+        if (GAME_TUNING.world.autoScrollEnabled) {
+            this.cameraX += this.scrollSpeed * dt;
+        } else {
+            this.cameraX = Math.max(this.cameraX, this.wheelBody.position.x - 260);
+        }
+
+        this.updateCamera();
 
         this.trackAirborneFall();
-
         this.handleInput();
         this.updateMovementStatus();
 
@@ -329,15 +331,75 @@ export class GameScene extends Phaser.Scene {
             return;
         }
 
-        const deadLeft = this.cameraX - 120;
-
-        if (
-            this.wheelBody.position.x < deadLeft ||
-            this.wheelBody.position.y > 1000 ||
-            this.wheelBody.position.x > this.lastGroundX + 300
-        ) {
+        if (this.shouldDieOutOfMarket()) {
             this.gameOver(distance, 'OUT OF MARKET');
         }
+    }
+
+    updateCamera() {
+        const cam = this.cameras.main;
+
+        let targetCameraX = this.cameraX;
+
+        if (
+            GAME_TUNING.camera.horizontalFollowEnabled &&
+            this.wheelBody
+        ) {
+            const playerBasedCameraX =
+                this.wheelBody.position.x - GAME_TUNING.camera.targetScreenX;
+
+            targetCameraX = Math.max(this.cameraX, playerBasedCameraX);
+        }
+
+        const desiredScrollX = Math.max(
+            0,
+            targetCameraX - GAME_TUNING.camera.autoScrollLead
+        );
+
+        cam.scrollX = Phaser.Math.Linear(
+            cam.scrollX,
+            desiredScrollX,
+            GAME_TUNING.camera.horizontalFollowLerp
+        );
+
+        if (!GAME_TUNING.camera.verticalFollowEnabled || !this.wheelBody) {
+            return;
+        }
+
+        const desiredScrollY =
+            this.wheelBody.position.y - GAME_TUNING.camera.targetScreenY;
+
+        const clampedScrollY = Phaser.Math.Clamp(
+            desiredScrollY,
+            GAME_TUNING.camera.minScrollY,
+            GAME_TUNING.camera.maxScrollY
+        );
+
+        cam.scrollY = Phaser.Math.Linear(
+            cam.scrollY,
+            clampedScrollY,
+            GAME_TUNING.camera.verticalFollowLerp
+        );
+    }
+
+    shouldDieOutOfMarket() {
+        if (!this.wheelBody) {
+            return false;
+        }
+
+        const deadLeft = this.cameraX - GAME_TUNING.world.deadLeftOffset;
+
+        if (
+            GAME_TUNING.world.autoScrollEnabled &&
+            this.wheelBody.position.x < deadLeft
+        ) {
+            return true;
+        }
+
+        return (
+            this.wheelBody.position.y > GAME_TUNING.camera.maxScrollY + 1400 ||
+            this.wheelBody.position.x > this.lastGroundX + 300
+        );
     }
 
     updateMovementStatus() {
@@ -350,7 +412,7 @@ export class GameScene extends Phaser.Scene {
         const downHeld = this.cursors.down.isDown;
 
         if (grounded && leftHeld && downHeld) {
-            this.statusText.setText('GRIP BRAKE');
+            this.statusText.setText('GRIP REVERSE');
             this.statusText.setColor('#fbbf24');
             return;
         }
@@ -493,8 +555,8 @@ export class GameScene extends Phaser.Scene {
         const fallDistance = this.maxFallDistance;
 
         const fatalFreeFall =
-            landingVelocityY >= this.fatalVelocityY ||
-            fallDistance >= this.fatalFallDistance;
+            landingVelocityY >= PLAYER_TUNING.fall.fatalVelocityY ||
+            fallDistance >= PLAYER_TUNING.fall.fatalFallDistance;
 
         if (fatalFreeFall) {
             this.gameOver(this.getDistance(), 'FREE FALL');
@@ -502,8 +564,8 @@ export class GameScene extends Phaser.Scene {
         }
 
         const hardLanding =
-            landingVelocityY >= this.hardLandingVelocityY ||
-            fallDistance >= this.hardLandingFallDistance;
+            landingVelocityY >= PLAYER_TUNING.fall.hardLandingVelocityY ||
+            fallDistance >= PLAYER_TUNING.fall.hardLandingFallDistance;
 
         if (hardLanding) {
             this.applyHardLandingStabilizer();
@@ -519,11 +581,17 @@ export class GameScene extends Phaser.Scene {
         const Body = Phaser.Physics.Matter.Matter.Body;
 
         Body.setVelocity(this.wheelBody, {
-            x: this.wheelBody.velocity.x * 0.88,
-            y: Math.min(this.wheelBody.velocity.y * 0.78, 8.2)
+            x: this.wheelBody.velocity.x * PLAYER_TUNING.fall.hardLandingXMultiplier,
+            y: Math.min(
+                this.wheelBody.velocity.y * PLAYER_TUNING.fall.hardLandingYMultiplier,
+                PLAYER_TUNING.fall.hardLandingYMax
+            )
         });
 
-        Body.setAngularVelocity(this.wheelBody, this.wheelBody.angularVelocity * 0.8);
+        Body.setAngularVelocity(
+            this.wheelBody,
+            this.wheelBody.angularVelocity * PLAYER_TUNING.fall.hardLandingAngularMultiplier
+        );
     }
 
     flashStatus(text, color = '#fbbf24', duration = 450) {
@@ -542,45 +610,58 @@ export class GameScene extends Phaser.Scene {
     }
 
     applyLeftGroundControl(Body, downHeld) {
+        const left = PLAYER_TUNING.left;
+        const limits = PLAYER_TUNING.limits;
+
         const vx = this.wheelBody.velocity.x;
         const vy = this.wheelBody.velocity.y;
 
-        /*
-          LEFT는 실제 후진/역회전.
-          오른쪽으로 빠르게 내려가던 중이면 마찰성 감속.
-          충분히 느려지면 실제로 왼쪽으로 움직일 수 있음.
-        */
         Body.applyForce(
             this.wheelBody,
             this.wheelBody.position,
-            { x: downHeld ? -0.00078 : -0.00058, y: 0 }
+            {
+                x: downHeld
+                    ? left.holdForceGroundWithGrip
+                    : left.holdForceGround,
+                y: 0
+            }
         );
 
         Body.setAngularVelocity(
             this.wheelBody,
             Phaser.Math.Clamp(
-                this.wheelBody.angularVelocity - (downHeld ? 0.014 : 0.010),
-                -2.8,
-                2.8
+                this.wheelBody.angularVelocity +
+                    (downHeld ? left.angularGroundWithGrip : left.angularGround),
+                -limits.angularLimit,
+                limits.angularLimit
             )
         );
 
         if (vx > 0) {
             Body.setVelocity(this.wheelBody, {
-                x: vx * (downHeld ? 0.925 : 0.965),
-                y: vy > 0 ? vy * (downHeld ? 0.965 : 0.985) : vy
+                x: vx * (
+                    downHeld
+                        ? left.reverseBrakeMultiplierWithGrip
+                        : left.reverseBrakeMultiplier
+                ),
+                y: vy > 0
+                    ? vy * (
+                        downHeld
+                            ? left.reverseVerticalDampingWithGrip
+                            : left.reverseVerticalDamping
+                    )
+                    : vy
             });
         } else {
             Body.setVelocity(this.wheelBody, {
-                x: Phaser.Math.Clamp(vx - (downHeld ? 0.018 : 0.010), -4.5, 6),
+                x: Phaser.Math.Clamp(
+                    vx - (downHeld ? left.backwardAccelWithGrip : left.backwardAccel),
+                    limits.velocityXMin,
+                    limits.velocityXMax
+                ),
                 y: vy
             });
         }
-
-        Body.setAngularVelocity(
-            this.wheelBody,
-            this.wheelBody.angularVelocity * (downHeld ? 0.92 : 0.97)
-        );
     }
 
     applyDownGrip(Body) {
@@ -588,31 +669,39 @@ export class GameScene extends Phaser.Scene {
             return;
         }
 
+        const grip = PLAYER_TUNING.downGrip;
+
         const vx = this.wheelBody.velocity.x;
         const vy = this.wheelBody.velocity.y;
 
-        /*
-          DOWN은 지면 접촉 중 grip/brace.
-          자유낙하 중에는 구원 버튼이 아님.
-        */
         Body.setVelocity(this.wheelBody, {
-            x: vx * 0.975,
-            y: vy > 0 ? vy * 0.94 : vy
+            x: vx * grip.horizontalDamping,
+            y: vy > 0 ? vy * grip.verticalDamping : vy
         });
 
-        Body.setAngularVelocity(this.wheelBody, this.wheelBody.angularVelocity * 0.93);
+        Body.setAngularVelocity(
+            this.wheelBody,
+            this.wheelBody.angularVelocity * grip.angularDamping
+        );
     }
 
     applyAirLeftControl(Body) {
+        const left = PLAYER_TUNING.left;
+        const limits = PLAYER_TUNING.limits;
+
         Body.applyForce(
             this.wheelBody,
             this.wheelBody.position,
-            { x: -0.00008, y: 0 }
+            { x: left.holdForceAir, y: 0 }
         );
 
         Body.setAngularVelocity(
             this.wheelBody,
-            Phaser.Math.Clamp(this.wheelBody.angularVelocity - 0.002, -2.4, 2.4)
+            Phaser.Math.Clamp(
+                this.wheelBody.angularVelocity + left.angularAir,
+                -limits.angularLimit,
+                limits.angularLimit
+            )
         );
     }
 
@@ -656,8 +745,6 @@ export class GameScene extends Phaser.Scene {
         this.maxFallDistance = 0;
         this.spawnGraceUntil = this.time.now + 1000;
 
-        this.lastBrakeTapAt = -99999;
-
         if (this.statusText) {
             this.statusText.setText('');
         }
@@ -681,15 +768,15 @@ export class GameScene extends Phaser.Scene {
 
         this.wheelBody = this.matter.add.circle(
             this.startX,
-            300,
+            PLAYER_TUNING.wheel.spawnY,
             this.wheelRadius,
             {
                 label: 'wheel',
-                restitution: 0.0,
-                friction: 0.54,
-                frictionStatic: 44,
-                frictionAir: 0.02,
-                density: 0.0027
+                restitution: PLAYER_TUNING.wheel.restitution,
+                friction: PLAYER_TUNING.wheel.friction,
+                frictionStatic: PLAYER_TUNING.wheel.frictionStatic,
+                frictionAir: PLAYER_TUNING.wheel.frictionAir,
+                density: PLAYER_TUNING.wheel.density
             }
         );
 
@@ -728,13 +815,13 @@ export class GameScene extends Phaser.Scene {
                 midX,
                 midY,
                 length,
-                44,
+                GAME_TUNING.terrain.colliderThickness,
                 {
                     label: 'ground',
                     isStatic: true,
                     angle,
-                    friction: 1.0,
-                    frictionStatic: 48
+                    friction: GAME_TUNING.terrain.groundFriction,
+                    frictionStatic: GAME_TUNING.terrain.groundStaticFriction
                 }
             );
 
@@ -792,6 +879,9 @@ export class GameScene extends Phaser.Scene {
         const Body = Phaser.Physics.Matter.Matter.Body;
         const grounded = this.isGrounded();
 
+        const right = PLAYER_TUNING.right;
+        const limits = PLAYER_TUNING.limits;
+
         const rightHeld = this.cursors.right.isDown;
         const leftHeld = this.cursors.left.isDown;
         const downHeld = this.cursors.down.isDown;
@@ -800,21 +890,25 @@ export class GameScene extends Phaser.Scene {
             Body.applyForce(
                 this.wheelBody,
                 this.wheelBody.position,
-                { x: grounded ? 0.00042 : 0.00010, y: 0 }
+                {
+                    x: grounded ? right.holdForceGround : right.holdForceAir,
+                    y: 0
+                }
             );
 
             Body.setAngularVelocity(
                 this.wheelBody,
                 Phaser.Math.Clamp(
-                    this.wheelBody.angularVelocity + (grounded ? 0.007 : 0.002),
-                    -2.4,
-                    2.4
+                    this.wheelBody.angularVelocity +
+                        (grounded ? right.holdAngularGround : right.holdAngularAir),
+                    -limits.angularLimit,
+                    limits.angularLimit
                 )
             );
 
-            if (grounded && this.wheelBody.velocity.x < 0.025) {
+            if (grounded && this.wheelBody.velocity.x < right.minForwardVelocity) {
                 Body.setVelocity(this.wheelBody, {
-                    x: 0.025,
+                    x: right.minForwardVelocity,
                     y: this.wheelBody.velocity.y
                 });
             }
@@ -823,9 +917,10 @@ export class GameScene extends Phaser.Scene {
         if (Phaser.Input.Keyboard.JustDown(this.cursors.right)) {
             Body.setVelocity(this.wheelBody, {
                 x: Phaser.Math.Clamp(
-                    this.wheelBody.velocity.x + (grounded ? 0.62 : 0.22),
-                    -6,
-                    6
+                    this.wheelBody.velocity.x +
+                        (grounded ? right.tapBoostGround : right.tapBoostAir),
+                    limits.velocityXMin,
+                    limits.velocityXMax
                 ),
                 y: this.wheelBody.velocity.y
             });
@@ -833,9 +928,10 @@ export class GameScene extends Phaser.Scene {
             Body.setAngularVelocity(
                 this.wheelBody,
                 Phaser.Math.Clamp(
-                    this.wheelBody.angularVelocity + (grounded ? 0.22 : 0.08),
-                    -2.8,
-                    2.8
+                    this.wheelBody.angularVelocity +
+                        (grounded ? right.tapAngularGround : right.tapAngularAir),
+                    -limits.angularLimit,
+                    limits.angularLimit
                 )
             );
         }
@@ -850,7 +946,9 @@ export class GameScene extends Phaser.Scene {
             this.applyDownGrip(Body);
         }
 
-        const canJump = grounded && !downHeld;
+        const canJump =
+            grounded &&
+            !(PLAYER_TUNING.jump.disableJumpWhileDownHeld && downHeld);
 
         if (
             (Phaser.Input.Keyboard.JustDown(this.jumpKey) ||
@@ -859,7 +957,7 @@ export class GameScene extends Phaser.Scene {
         ) {
             Body.setVelocity(this.wheelBody, {
                 x: this.wheelBody.velocity.x,
-                y: -10.2
+                y: PLAYER_TUNING.jump.velocityY
             });
 
             this.groundContactCount = 0;
@@ -902,11 +1000,13 @@ export class GameScene extends Phaser.Scene {
             return;
         }
 
-        const left = this.cameras.main.scrollX - 120;
-        const right = this.cameras.main.scrollX + this.scale.width + 120;
+        const cam = this.cameras.main;
+        const left = cam.scrollX - 180;
+        const right = cam.scrollX + this.scale.width + 180;
+        const bottom = cam.scrollY + this.scale.height + GAME_TUNING.terrain.fillBottomPadding;
 
         const visible = this.groundPoints.filter(
-            (p) => p.x >= left - 220 && p.x <= right + 220
+            (p) => p.x >= left - 320 && p.x <= right + 320
         );
 
         if (visible.length < 2) {
@@ -914,16 +1014,16 @@ export class GameScene extends Phaser.Scene {
         }
 
         g.fillStyle(0x334155, 1);
-        g.lineStyle(6, 0x94a3b8, 1);
+        g.lineStyle(GAME_TUNING.terrain.visualLineWidth, 0x94a3b8, 1);
 
         g.beginPath();
-        g.moveTo(visible[0].x, 720);
+        g.moveTo(visible[0].x, bottom);
 
         for (const p of visible) {
             g.lineTo(p.x, p.y);
         }
 
-        g.lineTo(visible[visible.length - 1].x, 720);
+        g.lineTo(visible[visible.length - 1].x, bottom);
         g.closePath();
         g.fillPath();
 
@@ -954,12 +1054,16 @@ export class GameScene extends Phaser.Scene {
             return;
         }
 
+        const cam = this.cameras.main;
+        const top = cam.scrollY + 140;
+        const bottom = cam.scrollY + this.scale.height + 180;
+
         g.lineStyle(5, 0xfbbf24, 1);
-        g.lineBetween(this.finishLineX, 220, this.finishLineX, 700);
+        g.lineBetween(this.finishLineX, top, this.finishLineX, bottom);
 
         if (this.finishText) {
             this.finishText
-                .setPosition(this.finishLineX, 205)
+                .setPosition(this.finishLineX, top - 20)
                 .setVisible(true);
         }
     }
