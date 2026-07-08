@@ -2,21 +2,30 @@ name: Generate Daily Market Map
 
 on:
   workflow_dispatch:
+
+  # GitHub cron은 UTC 기준.
+  # 08:30 UTC = 한국시간 17:30 KST.
+  # KOSPI 장 마감 후 Yahoo 데이터가 들어올 시간을 고려해서 17:30 KST로 설정.
   schedule:
-    # GitHub Actions cron은 UTC 기준.
-    # 22:30 UTC = 한국시간 다음날 07:30.
-    # 미국 장 마감 후 데이터가 어느 정도 반영된 뒤 실행하는 목적.
-    - cron: '30 22 * * 1-5'
+    - cron: "30 8 * * 1-5"
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+concurrency:
+  group: trademill-pages
+  cancel-in-progress: false
 
 jobs:
-  generate-market-map:
+  generate-and-deploy:
+    name: Generate KOSPI map and deploy Pages
     runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
       - name: Checkout repository
@@ -25,8 +34,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: '24'
-          cache: 'npm'
+          node-version: 24
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -34,41 +43,46 @@ jobs:
       - name: Generate market map
         run: node scripts/fetch-market-data.mjs
 
-      - name: Sync data to docs for GitHub Pages
+      - name: Sync public data to docs
         run: |
           mkdir -p docs/data
           rm -rf docs/data/maps
           cp -R public/data/maps docs/data/maps
           cp public/data/market-terrain.json docs/data/market-terrain.json
 
-          cat > docs/index.html <<'HTML'
-          <!doctype html>
-          <html>
-          <head>
-            <meta charset="utf-8" />
-            <title>TM Phaser Market Maps</title>
-          </head>
-          <body>
-            <h1>TM Phaser Market Maps</h1>
-            <p>Market map JSON storage for TM Phaser.</p>
-            <ul>
-              <li><a href="./data/maps/index.json">Map Index JSON</a></li>
-              <li><a href="./data/market-terrain.json">Latest Market Terrain JSON</a></li>
-            </ul>
-          </body>
-          </html>
-          HTML
+      - name: Show generated latest map
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
 
-      - name: Commit generated map files
+          for (const p of ['public/data/maps/index.json', 'docs/data/maps/index.json']) {
+            const json = JSON.parse(fs.readFileSync(p, 'utf8'));
+            console.log(`${p} => ${json.latestMapId}`);
+          }
+          NODE
+
+      - name: Commit generated data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add public/data docs/data docs/index.html
+          git add public/data docs/data
 
           if git diff --cached --quiet; then
-            echo "No changes to commit."
+            echo "No generated data changes to commit."
           else
             git commit -m "Generate daily market map"
             git push
           fi
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
