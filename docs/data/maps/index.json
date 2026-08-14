@@ -1,8 +1,31 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-08-13T09:37:10.241Z",
-  "latestMapId": "2026-08-13_KS11_1m_v5kospi",
+  "updatedAt": "2026-08-14T09:31:51.362Z",
+  "latestMapId": "2026-08-14_KS11_1m_v5kospi",
   "maps": [
+    {
+      "mapId": "2026-08-14_KS11_1m_v5kospi",
+      "date": "2026-08-14",
+      "marketDate": "2026-08-14",
+      "symbol": "^KS11",
+      "label": "KOSPI Composite",
+      "interval": "1m",
+      "mode": "intraday",
+      "timeZone": "Asia/Seoul",
+      "barsUsed": 220,
+      "difficulty": {
+        "score": 10,
+        "avgStep": 313.96,
+        "maxUphillStep": 1555.09,
+        "maxDropStep": 1011.1,
+        "totalUphill": 35266.98,
+        "totalDrop": 33489.71,
+        "priceRangePct": 2.2398,
+        "heightRangePx": 2789.56
+      },
+      "generatedAt": "2026-08-14T09:31:51.359Z",
+      "path": "/data/maps/2026-08-14_KS11_1m_v5kospi.json"
+    },
     {
       "mapId": "2026-08-13_KS11_1m_v5kospi",
       "date": "2026-08-13",
