@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-08-14T09:31:51.362Z",
+  "updatedAt": "2026-08-17T09:05:33.815Z",
   "latestMapId": "2026-08-14_KS11_1m_v5kospi",
   "maps": [
     {
@@ -15,15 +15,15 @@
       "barsUsed": 220,
       "difficulty": {
         "score": 10,
-        "avgStep": 313.96,
+        "avgStep": 313.95,
         "maxUphillStep": 1555.09,
         "maxDropStep": 1011.1,
-        "totalUphill": 35266.98,
-        "totalDrop": 33489.71,
+        "totalUphill": 35265.96,
+        "totalDrop": 33488.69,
         "priceRangePct": 2.2398,
         "heightRangePx": 2789.56
       },
-      "generatedAt": "2026-08-14T09:31:51.359Z",
+      "generatedAt": "2026-08-17T09:05:33.809Z",
       "path": "/data/maps/2026-08-14_KS11_1m_v5kospi.json"
     },
     {
