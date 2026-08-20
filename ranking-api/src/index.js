@@ -19,6 +19,7 @@ const allowedOriginRules = [
   /^http:\/\/localhost:\d+$/i,
   /^http:\/\/127\.0\.0\.1:\d+$/i,
   /^https:\/\/hyunjoon-joo\.github\.io$/i,
+  /^https:\/\/trademill-theta\.vercel\.app$/i,
   /^https:\/\/.*\.itch\.io$/i,
   /^https:\/\/.*\.itch\.zone$/i,
   /^https:\/\/.*\.hwcdn\.net$/i
