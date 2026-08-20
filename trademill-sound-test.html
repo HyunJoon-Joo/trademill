@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TRADEMILL Sound Test</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      background: #050505;
+      color: #eeeeee;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #050505; color: #eee; }
+    main { width: min(980px, calc(100% - 32px)); margin: 28px auto 60px; }
+    h1 { font-size: 24px; margin: 0 0 6px; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+    p { color: #aaa; line-height: 1.6; margin: 6px 0; }
+    .notice { border: 1px solid #555; padding: 12px 14px; margin: 18px 0; background: #0c0c0c; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    section { border: 1px solid #333; padding: 14px; background: #0a0a0a; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+    button {
+      appearance: none;
+      border: 1px solid #888;
+      background: #111;
+      color: #eee;
+      padding: 9px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover { border-color: #fff; background: #181818; }
+    button:active { transform: translateY(1px); }
+    button.primary { border-color: #ddd; background: #eee; color: #111; }
+    label { color: #bbb; font-size: 13px; }
+    input[type="range"] { width: 100%; }
+    .value { color: #fff; min-width: 46px; display: inline-block; text-align: right; }
+    .status { margin-top: 12px; color: #bdbdbd; min-height: 22px; }
+    code { color: #ddd; }
+    .small { font-size: 12px; color: #888; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>TRADEMILL SOUND TEST</h1>
+  <p>현재 프로젝트의 <code>TrademillAudio.js</code>와 <code>audioTuning.js</code>를 그대로 불러와 재생하는 테스트 페이지.</p>
+
+  <div class="notice">
+    <strong>첫 실행:</strong> 브라우저 정책 때문에 처음에는 반드시 아래 <b>UNLOCK AUDIO</b>를 한 번 클릭해야 한다. 그 전 hover 무음은 정상이다.
+    <div class="row">
+      <button id="unlock" class="primary">UNLOCK AUDIO</button>
+      <button id="reset">RESET PITCH STATE</button>
+    </div>
+    <div id="status" class="status">AudioContext: not unlocked</div>
+  </div>
+
+  <div class="grid">
+    <section>
+      <h2>RIGHT COIN</h2>
+      <p class="small">피로도에 따른 오른쪽 코인. 100% 연타는 계속 음이 내려간다.</p>
+      <div class="row">
+        <button data-right="0">RIGHT / fatigue 0%</button>
+        <button data-right="0.5">RIGHT / fatigue 50%</button>
+        <button data-right="1">RIGHT / fatigue 100%</button>
+      </div>
+      <div class="row">
+        <button id="right10">RIGHT ×10 / fatigue 100%</button>
+        <button id="right30">RIGHT ×30 / fatigue 100%</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>LEFT REVERSE COIN</h2>
+      <p class="small">첫 음은 현재 기본음. 같은 판에서 연타할수록 계속 낮아진다.</p>
+      <div class="row">
+        <button id="left1">LEFT ×1</button>
+        <button id="left10">LEFT ×10</button>
+        <button id="left30">LEFT ×30</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>IMPACT / END</h2>
+      <div class="row">
+        <button id="landing">HARD LANDING</button>
+        <button id="death">DEATH / FALL</button>
+        <button id="giveup">GIVE UP</button>
+      </div>
+      <div class="row">
+        <button id="finish">FINISH CASCADE</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>UI / SCORE</h2>
+      <p class="small">아래 HOVER TEST 버튼 위로 마우스를 올렸다 뺐다 해볼 것.</p>
+      <div class="row">
+        <button id="hoverTest">HOVER TEST</button>
+        <button id="uiClick">UI CLICK</button>
+      </div>
+      <div class="row">
+        <button id="score27">SAVE / RANK #27</button>
+        <button id="score7">SAVE / TOP 10 (#7)</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>BGM — COMPOUND INTEREST</h2>
+      <div class="row">
+        <button id="bgmStart">START</button>
+        <button id="bgmPause">PAUSE</button>
+        <button id="bgmResume">RESUME</button>
+        <button id="bgmStop">STOP</button>
+      </div>
+      <p class="small">방향키 코인과 같이 들어서 BGM이 너무 앞에 나오는지도 확인.</p>
+    </section>
+
+    <section>
+      <h2>QUICK SEQUENCE</h2>
+      <p class="small">주요 SFX를 순서대로 한 번에 듣는다. 약 11초.</p>
+      <div class="row">
+        <button id="playAll">PLAY ALL SFX</button>
+      </div>
+    </section>
+  </div>
+
+  <section style="margin-top:14px;">
+    <h2>VOLUME TEST</h2>
+    <p class="small">이 페이지에서만 런타임으로 바뀐다. <code>audioTuning.js</code> 파일 자체는 수정하지 않는다.</p>
+    <div class="grid">
+      <div>
+        <label>MASTER <span class="value" id="masterValue"></span></label>
+        <input id="master" type="range" min="0" max="1" step="0.01" />
+      </div>
+      <div>
+        <label>SFX <span class="value" id="sfxValue"></span></label>
+        <input id="sfx" type="range" min="0" max="1" step="0.01" />
+      </div>
+      <div>
+        <label>UI <span class="value" id="uiValue"></span></label>
+        <input id="ui" type="range" min="0" max="1" step="0.01" />
+      </div>
+      <div>
+        <label>BGM <span class="value" id="bgmValue"></span></label>
+        <input id="bgm" type="range" min="0" max="1" step="0.01" />
+      </div>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+  import { trademillAudio } from '/src/game/audio/TrademillAudio.js';
+  import { AUDIO_TUNING } from '/src/game/config/audioTuning.js';
+
+  const $ = (id) => document.getElementById(id);
+  const status = $('status');
+
+  function setStatus(text) {
+    status.textContent = text;
+  }
+
+  async function unlock() {
+    const ok = await trademillAudio.ensureUnlocked();
+    const state = trademillAudio.context?.state || 'unavailable';
+    setStatus(`AudioContext: ${state}${ok ? ' / ready' : ''}`);
+    return ok;
+  }
+
+  function repeat(count, gapMs, fn) {
+    for (let i = 0; i < count; i += 1) {
+      window.setTimeout(fn, i * gapMs);
+    }
+  }
+
+  $('unlock').addEventListener('click', async () => {
+    await unlock();
+  });
+
+  $('reset').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.resetRunState();
+    setStatus('Pitch state reset: RIGHT / LEFT both reset');
+  });
+
+  document.querySelectorAll('[data-right]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await unlock();
+      trademillAudio.playCoinForward({ fatigue: Number(button.dataset.right) });
+    });
+  });
+
+  $('right10').addEventListener('click', async () => {
+    await unlock();
+    repeat(10, 115, () => trademillAudio.playCoinForward({ fatigue: 1 }));
+  });
+  $('right30').addEventListener('click', async () => {
+    await unlock();
+    repeat(30, 105, () => trademillAudio.playCoinForward({ fatigue: 1 }));
+  });
+
+  $('left1').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.playCoinReverse();
+  });
+  $('left10').addEventListener('click', async () => {
+    await unlock();
+    repeat(10, 135, () => trademillAudio.playCoinReverse());
+  });
+  $('left30').addEventListener('click', async () => {
+    await unlock();
+    repeat(30, 125, () => trademillAudio.playCoinReverse());
+  });
+
+  $('landing').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.playHardLanding(1);
+  });
+  $('death').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.playDeath();
+  });
+  $('giveup').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.playGiveUp();
+  });
+  $('finish').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.playFinish();
+  });
+
+  $('hoverTest').addEventListener('pointerenter', () => {
+    trademillAudio.playUiHover();
+  });
+  $('uiClick').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.playUiClick();
+  });
+  $('score27').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.playScoreSaved(27);
+  });
+  $('score7').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.playScoreSaved(7);
+  });
+
+  $('bgmStart').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.requestBgmStart();
+    setStatus('BGM requested / started');
+  });
+  $('bgmPause').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.pauseBgm();
+    setStatus('BGM paused');
+  });
+  $('bgmResume').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.resumeBgm();
+    setStatus('BGM resumed');
+  });
+  $('bgmStop').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.stopBgm({ resetCycle: true });
+    setStatus('BGM stopped / cycle reset');
+  });
+
+  $('playAll').addEventListener('click', async () => {
+    await unlock();
+    trademillAudio.resetRunState();
+    const steps = [
+      [0, () => trademillAudio.playCoinForward({ fatigue: 0 })],
+      [700, () => trademillAudio.playCoinForward({ fatigue: 0.5 })],
+      [1400, () => repeat(7, 100, () => trademillAudio.playCoinForward({ fatigue: 1 }))],
+      [2600, () => trademillAudio.resetRunState()],
+      [2750, () => repeat(7, 125, () => trademillAudio.playCoinReverse())],
+      [3900, () => trademillAudio.playHardLanding(1)],
+      [4700, () => trademillAudio.playDeath()],
+      [5600, () => trademillAudio.playGiveUp()],
+      [6550, () => trademillAudio.playUiClick()],
+      [7200, () => trademillAudio.playScoreSaved(27)],
+      [8150, () => trademillAudio.playScoreSaved(7)],
+      [9300, () => trademillAudio.playFinish()]
+    ];
+    steps.forEach(([delay, fn]) => window.setTimeout(fn, delay));
+    setStatus('Playing all SFX…');
+  });
+
+  const volumeControls = [
+    ['master', 'masterValue', AUDIO_TUNING.volume.master, (v) => trademillAudio.setMasterVolume(v)],
+    ['sfx', 'sfxValue', AUDIO_TUNING.volume.sfx, (v) => trademillAudio.setSfxVolume(v)],
+    ['ui', 'uiValue', AUDIO_TUNING.volume.ui, (v) => trademillAudio.setUiVolume(v)],
+    ['bgm', 'bgmValue', AUDIO_TUNING.volume.bgm, (v) => trademillAudio.setBgmVolume(v)]
+  ];
+
+  volumeControls.forEach(([inputId, valueId, initial, setter]) => {
+    const input = $(inputId);
+    const value = $(valueId);
+    input.value = String(initial);
+    value.textContent = Number(initial).toFixed(2);
+    input.addEventListener('input', async () => {
+      await unlock();
+      const next = Number(input.value);
+      value.textContent = next.toFixed(2);
+      setter(next);
+    });
+  });
+
+  trademillAudio.installGlobalUnlockListeners();
+</script>
+</body>
+</html>

@@ -1,5 +1,17 @@
 import Phaser from 'phaser';
-import { getPlayerBest } from '../services/rankingService';
+import { fetchDataJson, MAP_INDEX_PATH } from '../config/dataConfig';
+import { VISUAL_THEME } from '../config/visualTheme';
+import {
+    createLacquerBackground,
+    createNacreButton,
+    createNacrePanel,
+    createNacreText
+} from '../utils/visualEffects';
+import {
+    getLatestMapMeta,
+    getMapDate,
+    normalizeMapIndex
+} from '../utils/mapDataUtils';
 
 export class MenuScene extends Phaser.Scene {
     constructor() {
@@ -10,192 +22,275 @@ export class MenuScene extends Phaser.Scene {
         this.mapIndex = null;
         this.maps = [];
         this.uiObjects = [];
+        this.sceneAlive = true;
+        this.renderToken = 0;
+        this.refreshController = null;
+        this.isStartingGame = false;
     }
 
     create() {
-        this.cameras.main.setBackgroundColor('#0f172a');
+        this.cameras.main.setBackgroundColor(VISUAL_THEME.lacquer.base);
+        createLacquerBackground(this, {
+            seed: 'MenuScene',
+            depth: VISUAL_THEME.depth.background
+        });
 
-        this.mapIndex = this.registry.get('mapIndex');
-        this.maps = Array.isArray(this.mapIndex?.maps) ? this.mapIndex.maps : [];
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+            this.sceneAlive = false;
+            this.renderToken += 1;
+            this.refreshController?.abort();
+            this.refreshController = null;
+            this.clearUi();
+        });
 
-        this.drawBackground();
-        this.showMainMenu();
+        this.showLoading('UPDATING MARKET MAP...');
+        this.refreshMapIndexAndShowMenu();
     }
 
-    drawBackground() {
-        this.add.rectangle(0, 0, 1280, 720, 0x0f172a).setOrigin(0, 0);
-        this.add.rectangle(0, 500, 1280, 220, 0x111827).setOrigin(0, 0);
-
-        for (let i = 0; i < 24; i++) {
-            const x = i * 62;
-            const y = 540 + Math.sin(i * 0.85) * 38;
-            this.add.circle(x, y, 3, 0x334155, 0.85);
-        }
+    showLoading(message) {
+        this.clearUi();
+        this.addUi(createNacrePanel(this, 640, 320, 560, 120, {
+            phase: 1,
+            fillAlpha: 0.72
+        }));
+        this.addUi(
+            createNacreText(this, 640, 320, message, {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '24px'
+            }, {
+                phase: 1
+            }).setOrigin(0.5)
+        );
     }
 
     clearUi() {
-        for (const obj of this.uiObjects) {
-            if (obj && obj.destroy) {
-                obj.destroy();
-            }
+        for (const object of this.uiObjects) {
+            object?.destroy?.();
         }
 
         this.uiObjects = [];
     }
 
-    addUi(obj) {
-        this.uiObjects.push(obj);
-        return obj;
+    addUi(object) {
+        this.uiObjects.push(object);
+        return object;
+    }
+
+    async refreshMapIndex() {
+        this.refreshController?.abort();
+        this.refreshController = new AbortController();
+
+        try {
+            const rawIndex = await fetchDataJson(MAP_INDEX_PATH, {
+                signal: this.refreshController.signal
+            });
+            const freshIndex = normalizeMapIndex(rawIndex);
+
+            if (!this.sceneAlive) {
+                return false;
+            }
+
+            this.registry.set('mapIndex', freshIndex);
+            this.mapIndex = freshIndex;
+            this.maps = freshIndex.maps;
+            return true;
+        } catch (error) {
+            if (!this.sceneAlive) {
+                return false;
+            }
+
+            console.warn('최신 맵 인덱스 갱신 실패. 기존 데이터를 사용합니다.', error);
+
+            this.mapIndex = this.registry.get('mapIndex') || null;
+            this.maps = Array.isArray(this.mapIndex?.maps)
+                ? this.mapIndex.maps
+                : [];
+
+            return this.maps.length > 0;
+        }
+    }
+
+    async refreshMapIndexAndShowMenu() {
+        await this.refreshMapIndex();
+
+        if (this.sceneAlive) {
+            await this.showMainMenu();
+        }
     }
 
     async showMainMenu() {
+        const token = ++this.renderToken;
         this.clearUi();
 
-        const title = this.add.text(640, 110, 'TRADEMILL', {
-            fontFamily: 'Arial',
-            fontSize: '72px',
-            color: '#ffffff'
-        }).setOrigin(0.5);
-
-        const subtitle = this.add.text(640, 170, 'A daily market terrain made from NASDAQ data', {
-            fontFamily: 'Arial',
-            fontSize: '22px',
-            color: '#93c5fd'
-        }).setOrigin(0.5);
-
-        this.addUi(title);
-        this.addUi(subtitle);
+        this.addUi(
+            createNacreText(this, 640, 177, 'TRADEMILL', {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '72px',
+                fontStyle: 'bold'
+            }, {
+                phase: 0
+            }).setOrigin(0.5)
+        );
 
         const latestMap = this.getLatestMap();
 
-        let latestInfo = 'No market map loaded';
+        this.addUi(
+            createNacreText(
+                this,
+                640,
+                239,
+                'A DAILY MARKET TERRAIN',
+                {
+                    fontFamily: VISUAL_THEME.text.bodyFont,
+                    fontSize: '19px',
+                    color: VISUAL_THEME.text.secondary,
+                    letterSpacing: 2
+                },
+                {
+                    nacre: false
+                }
+            ).setOrigin(0.5)
+        );
 
-        if (latestMap) {
-            const difficulty = latestMap.difficulty?.score
-                ? ` / Difficulty ${latestMap.difficulty.score}`
-                : '';
+        const latestInfo = latestMap
+            ? `LATEST / ${getMapDate(latestMap, latestMap)}`
+            : 'NO MARKET MAP LOADED';
 
-            const record = await getPlayerBest(latestMap.mapId);
-            let recordText = ' / No Record';
+        this.addUi(createNacrePanel(this, 640, 307, 620, 62, {
+            phase: 3,
+            fillAlpha: 0.52,
+            glowAlpha: 0.06,
+            coreAlpha: 0.34
+        }));
 
-            if (record?.bestFinished) {
-                recordText = ` / Your Best FINISH`;
-            } else if (record) {
-                recordText = ` / Your Best ${record.bestDistance}`;
-            }
+        this.addUi(
+            createNacreText(this, 640, 307, latestInfo, {
+                fontFamily: VISUAL_THEME.text.monoFont,
+                fontSize: '18px',
+                color: VISUAL_THEME.text.primary,
+                align: 'center'
+            }, {
+                nacre: false
+            }).setOrigin(0.5)
+        );
 
-            latestInfo = `Today Map: ${latestMap.mapId}${difficulty}${recordText}`;
+        this.createButton(640, 402, 380, 56, 'PLAY LATEST MAP', () => {
+            this.playLatestMap();
+        }, 20, !latestMap, 0);
+
+        this.createButton(640, 477, 380, 56, 'MARKET ARCHIVE', () => {
+            this.scene.start('ArchiveScene');
+        }, 20, this.maps.length === 0, 2);
+
+        this.createButton(640, 552, 380, 56, 'HOW TO PLAY', () => {
+            this.showControls();
+        }, 20, false, 4);
+
+    }
+
+    async playLatestMap() {
+        if (this.isStartingGame) {
+            return;
         }
 
-        const info = this.add.text(640, 225, latestInfo, {
-            fontFamily: 'Arial',
-            fontSize: '18px',
-            color: '#cbd5e1'
-        }).setOrigin(0.5);
+        this.isStartingGame = true;
+        this.showLoading('CHECKING THE LATEST MAP...');
+        await this.refreshMapIndex();
 
-        this.addUi(info);
+        if (!this.sceneAlive) {
+            return;
+        }
 
-        this.createButton(640, 320, 380, 56, 'PLAY TODAY MAP', () => {
-            const map = this.getLatestMap();
+        const latestMap = this.getLatestMap();
 
-            if (map) {
-                this.scene.start('GameScene', { mapMeta: map });
-            }
-        });
+        if (!latestMap) {
+            this.isStartingGame = false;
+            await this.showMainMenu();
+            return;
+        }
 
-        this.createButton(640, 395, 380, 56, 'MARKET ARCHIVE', () => {
-            this.scene.start('ArchiveScene');
-        });
-
-        this.createButton(640, 470, 380, 56, 'HOW TO PLAY', () => {
-            this.showControls();
-        });
+        this.scene.start('GameScene', { mapMeta: latestMap });
     }
 
     showControls() {
+        this.renderToken += 1;
         this.clearUi();
 
-        const title = this.add.text(640, 80, 'HOW TO PLAY', {
-            fontFamily: 'Arial',
-            fontSize: '42px',
-            color: '#ffffff'
-        }).setOrigin(0.5);
+        this.addUi(
+            createNacreText(this, 640, 72, 'HOW TO PLAY', {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '42px',
+                fontStyle: 'bold'
+            }, {
+                phase: 2
+            }).setOrigin(0.5)
+        );
 
-        this.addUi(title);
+        this.addUi(createNacrePanel(this, 640, 330, 790, 430, {
+            phase: 1,
+            fillAlpha: 0.69
+        }));
 
         const bodyText = [
+            'COURSE: KOSPI / 1-MINUTE PRICE DATA',
+            '',
             'RIGHT hold: move forward',
             'RIGHT tap: burst forward',
-            'SPACE or UP: jump',
             'LEFT tap on ground: brake',
+            'LEFT hold: brake, then reverse',
             '',
-            'Uphill sections require repeated effort.',
-            'Downhill sections are dangerous.',
-            'Free fall can kill you instantly.',
-            'Hard landing triggers a brake challenge.',
+            'Uphill sections build fatigue and require repeated effort.',
+            'Downhill sections accelerate the wheel and demand more braking.',
+            'Free fall can end the run.',
             '',
-            'Each date has its own market map and ranking.'
+            'Each trading date has its own online ranking.'
         ].join('\n');
 
-        const body = this.add.text(640, 325, bodyText, {
-            fontFamily: 'Arial',
-            fontSize: '23px',
-            color: '#cbd5e1',
-            align: 'center',
-            lineSpacing: 9
-        }).setOrigin(0.5);
-
-        this.addUi(body);
+        this.addUi(
+            createNacreText(this, 640, 325, bodyText, {
+                fontFamily: VISUAL_THEME.text.bodyFont,
+                fontSize: '22px',
+                color: VISUAL_THEME.text.secondary,
+                align: 'center',
+                lineSpacing: 8
+            }, {
+                nacre: false
+            }).setOrigin(0.5)
+        );
 
         this.createButton(640, 620, 240, 48, 'BACK', () => {
             this.showMainMenu();
-        });
+        }, 20, false, 5);
     }
 
     getLatestMap() {
-        if (!this.mapIndex || !Array.isArray(this.maps) || this.maps.length === 0) {
-            return null;
-        }
-
-        return (
-            this.maps.find((m) => m.mapId === this.mapIndex.latestMapId) ||
-            this.maps[0]
-        );
+        return getLatestMapMeta(this.mapIndex);
     }
 
-    createButton(x, y, width, height, label, onClick, fontSize = 20) {
-        const container = this.add.container(x, y);
-
-        const bg = this.add.rectangle(0, 0, width, height, 0x1e293b, 1)
-            .setStrokeStyle(2, 0x64748b, 1)
-            .setInteractive({ useHandCursor: true });
-
-        const text = this.add.text(0, 0, label, {
-            fontFamily: 'Arial',
-            fontSize: `${fontSize}px`,
-            color: '#ffffff',
-            align: 'center',
-            wordWrap: { width: width - 28 }
-        }).setOrigin(0.5);
-
-        container.add(bg);
-        container.add(text);
-
-        bg.on('pointerover', () => {
-            bg.setFillStyle(0x334155, 1);
-            bg.setStrokeStyle(2, 0x93c5fd, 1);
+    createButton(
+        x,
+        y,
+        width,
+        height,
+        label,
+        onClick,
+        fontSize = 20,
+        disabled = false,
+        phase = 0
+    ) {
+        const button = createNacreButton(this, {
+            x,
+            y,
+            width,
+            height,
+            label,
+            onClick,
+            fontSize,
+            disabled,
+            phase
         });
 
-        bg.on('pointerout', () => {
-            bg.setFillStyle(0x1e293b, 1);
-            bg.setStrokeStyle(2, 0x64748b, 1);
-        });
-
-        bg.on('pointerdown', () => {
-            onClick();
-        });
-
-        this.addUi(container);
-        return container;
+        this.addUi(button);
+        return button;
     }
 }

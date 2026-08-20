@@ -1,22 +1,51 @@
-const BOARD_PREFIX = 'tm_board_';
 const PLAYER_NAME_KEY = 'tm_player_name';
+const PREFERRED_PLAYER_NAME_KEY = 'tm_player_name_preferred_v2';
+const MAX_PLAYER_NAME_LENGTH = 12;
+
+/*
+  과거 빌드가 날짜를 붙여 자동으로 만들었던 임시 이름 형식.
+  예: NEW_260611
+
+  이런 값은 사용자가 직접 정한 닉네임이 아니므로 새 입력창에 다시 보여주지 않는다.
+  한 번 발견하면 localStorage에서도 제거하여 이후에도 재등장하지 않게 한다.
+*/
+const LEGACY_AUTO_NAME_PATTERN = /^NEW_\d{6}$/;
 
 function getStorage() {
-    if (typeof window === 'undefined' || !window.localStorage) {
+    if (typeof window === 'undefined') {
         return null;
     }
 
-    return window.localStorage;
+    try {
+        return window.localStorage || null;
+    } catch {
+        return null;
+    }
 }
 
-function normalizeName(name) {
-    const raw = String(name || '').trim();
+/*
+  입력창에 표시할 수 있는 문자만 남긴다.
 
-    if (!raw) {
-        return 'YOU';
-    }
+  주의:
+  - 이 함수는 빈 문자열을 그대로 허용한다.
+  - 사용자가 아직 이름을 입력하지 않은 상태를 UI에서 빈칸으로 유지하기 위함이다.
+  - 서버 제출 직전에는 normalizePlayerName()이 빈칸을 YOU로 바꾼다.
+*/
+export function sanitizePlayerNameInput(name) {
+    return String(name || '')
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9_-]/g, '')
+        .slice(0, MAX_PLAYER_NAME_LENGTH);
+}
 
-    return raw.slice(0, 12).toUpperCase();
+/*
+  랭킹 서버로 보낼 최종 이름 규칙.
+  허용 문자: 영문 대문자, 숫자, _, -
+  비어 있으면 안전한 기본 이름 YOU를 사용한다.
+*/
+export function normalizePlayerName(name) {
+    return sanitizePlayerNameInput(name) || 'YOU';
 }
 
 export function formatElapsedMs(ms) {
@@ -29,395 +58,67 @@ export function formatElapsedMs(ms) {
     return `${minutes}:${String(seconds).padStart(2, '0')}.${tenths}`;
 }
 
-function entryFinished(entry) {
-    return !!entry?.bestFinished;
-}
-
-function entryElapsed(entry) {
-    const elapsed = Number(entry?.bestElapsedMs);
-
-    if (!Number.isFinite(elapsed) || elapsed <= 0) {
-        return Number.POSITIVE_INFINITY;
-    }
-
-    return elapsed;
-}
-
-function isEntryABetter(a, b) {
-    if (!b) {
-        return true;
-    }
-
-    if (!a) {
-        return false;
-    }
-
-    const aFinished = entryFinished(a);
-    const bFinished = entryFinished(b);
-
-    if (aFinished && !bFinished) {
-        return true;
-    }
-
-    if (!aFinished && bFinished) {
-        return false;
-    }
-
-    if (aFinished && bFinished) {
-        const aTime = entryElapsed(a);
-        const bTime = entryElapsed(b);
-
-        if (aTime !== bTime) {
-            return aTime < bTime;
-        }
-    }
-
-    const aDistance = Number(a.bestDistance) || 0;
-    const bDistance = Number(b.bestDistance) || 0;
-
-    if (aDistance !== bDistance) {
-        return aDistance > bDistance;
-    }
-
-    return String(a.bestAt || '').localeCompare(String(b.bestAt || '')) < 0;
-}
-
-function sortLeaderboard(entries) {
-    return [...entries]
-        .filter((entry) => entry && Number.isFinite(Number(entry.bestDistance)))
-        .sort((a, b) => {
-            if (isEntryABetter(a, b)) {
-                return -1;
-            }
-
-            if (isEntryABetter(b, a)) {
-                return 1;
-            }
-
-            return 0;
-        })
-        .slice(0, 10);
-}
-
-function dedupeLeaderboardByName(entries) {
-    const bestByName = new Map();
-
-    for (const entry of entries) {
-        if (!entry) {
-            continue;
-        }
-
-        const name = normalizeName(entry.playerName || 'YOU');
-
-        const normalizedEntry = {
-            ...entry,
-            playerName: name,
-            bestDistance: Math.max(0, Math.floor(Number(entry.bestDistance) || 0)),
-            bestFinished: !!entry.bestFinished,
-            bestElapsedMs: Number.isFinite(Number(entry.bestElapsedMs))
-                ? Math.max(0, Math.floor(Number(entry.bestElapsedMs)))
-                : null,
-            bestAt: entry.bestAt || new Date().toISOString(),
-            bestReason: entry.bestReason || entry.lastReason || '',
-            lastDistance: Math.max(0, Math.floor(Number(entry.lastDistance) || Number(entry.bestDistance) || 0)),
-            lastReason: entry.lastReason || entry.bestReason || '',
-            lastFinished: !!entry.lastFinished,
-            lastElapsedMs: Number.isFinite(Number(entry.lastElapsedMs))
-                ? Math.max(0, Math.floor(Number(entry.lastElapsedMs)))
-                : null,
-            updatedAt: entry.updatedAt || entry.bestAt || new Date().toISOString()
-        };
-
-        const existing = bestByName.get(name);
-
-        if (isEntryABetter(normalizedEntry, existing)) {
-            bestByName.set(name, normalizedEntry);
-        }
-    }
-
-    return sortLeaderboard([...bestByName.values()]);
-}
-
-export function getLeaderboardKey(mapId) {
-    return `${BOARD_PREFIX}${mapId}`;
-}
-
 export function readLocalPlayerName() {
-    const store = getStorage();
+    const storage = getStorage();
 
-    if (!store) {
-        return 'YOU';
+    if (!storage) {
+        return '';
     }
 
     try {
-        return normalizeName(store.getItem(PLAYER_NAME_KEY) || 'YOU');
+        /*
+          v2부터는 "사용자가 직접 입력한 기본 이름"과
+          "서버가 중복 회피를 위해 최종 배정한 이름"을 분리한다.
+
+          예:
+            사용자가 ABC 입력
+            서버가 ABC2로 저장
+
+          다음 판 입력창에는 ABC가 다시 보여야 한다.
+          그래야 다음 중복이 ABC3가 되고 ABC22처럼 번호가 겹치지 않는다.
+
+          과거 tm_player_name에는 서버가 배정한 ABC2 같은 값이 들어 있을 수 있어
+          최초 마이그레이션 때는 그 값을 자동으로 가져오지 않는다.
+          이 빌드에서 이름을 한 번 저장하면 preferred_v2 키가 생기고 이후부터 기억된다.
+        */
+        const preferredName = sanitizePlayerNameInput(
+            storage.getItem(PREFERRED_PLAYER_NAME_KEY)
+        );
+
+        if (LEGACY_AUTO_NAME_PATTERN.test(preferredName)) {
+            storage.removeItem(PREFERRED_PLAYER_NAME_KEY);
+            return '';
+        }
+
+        return preferredName;
     } catch {
-        return 'YOU';
+        return '';
     }
 }
 
 export function saveLocalPlayerName(name) {
-    const store = getStorage();
+    const normalized = normalizePlayerName(name);
+    const storage = getStorage();
 
-    if (!store) {
-        return 'YOU';
+    if (!storage) {
+        return normalized;
     }
 
-    const normalized = normalizeName(name);
-
     try {
-        store.setItem(PLAYER_NAME_KEY, normalized);
+        /* 새 코드가 읽는 기본 이름 */
+        storage.setItem(PREFERRED_PLAYER_NAME_KEY, normalized);
+
+        /*
+          구버전과의 호환을 위해 기존 키도 같은 기본 이름으로 맞춰둔다.
+          단, readLocalPlayerName()은 preferred_v2만 읽는다.
+        */
+        storage.setItem(PLAYER_NAME_KEY, normalized);
     } catch {
-        // ignore localStorage errors
+        /*
+          사생활 보호 모드, 저장 공간 부족 등으로 localStorage가 실패해도
+          게임과 온라인 랭킹 저장 자체는 계속 진행한다.
+        */
     }
 
     return normalized;
-}
-
-function readRawLeaderboard(mapId) {
-    const store = getStorage();
-
-    if (!store || !mapId) {
-        return [];
-    }
-
-    try {
-        const raw = store.getItem(getLeaderboardKey(mapId));
-        const parsed = raw ? JSON.parse(raw) : [];
-
-        if (!Array.isArray(parsed)) {
-            return [];
-        }
-
-        return parsed;
-    } catch {
-        return [];
-    }
-}
-
-function writeRawLeaderboard(mapId, entries) {
-    const store = getStorage();
-
-    if (!store || !mapId) {
-        return;
-    }
-
-    try {
-        store.setItem(getLeaderboardKey(mapId), JSON.stringify(dedupeLeaderboardByName(entries)));
-    } catch {
-        // ignore localStorage errors
-    }
-}
-
-export function readLocalLeaderboard(mapId) {
-    if (!mapId) {
-        return [];
-    }
-
-    return dedupeLeaderboardByName(readRawLeaderboard(mapId));
-}
-
-export function readLocalRecord(mapId, playerName = null) {
-    const board = readLocalLeaderboard(mapId);
-
-    if (board.length === 0) {
-        return null;
-    }
-
-    const targetName = normalizeName(playerName || readLocalPlayerName());
-
-    const ownRecord = board.find((entry) => {
-        return normalizeName(entry.playerName) === targetName;
-    });
-
-    return ownRecord || null;
-}
-
-export function saveLocalRunResult({
-    mapId,
-    distance,
-    reason,
-    finished = false,
-    elapsedMs = null,
-    playerName = null,
-    mapMeta = null,
-    mapData = null
-}) {
-    const store = getStorage();
-
-    if (!store || !mapId) {
-        return {
-            record: null,
-            previous: null,
-            leaderboard: [],
-            rank: null,
-            isNewBest: false,
-            previousBest: 0
-        };
-    }
-
-    const normalizedName = normalizeName(playerName || readLocalPlayerName() || 'YOU');
-
-    const numericDistance = Math.max(0, Math.floor(Number(distance) || 0));
-    const numericElapsed = Number.isFinite(Number(elapsedMs))
-        ? Math.max(0, Math.floor(Number(elapsedMs)))
-        : null;
-
-    const isFinished = !!finished || reason === 'FINISH';
-    const now = new Date().toISOString();
-
-    const boardBefore = readLocalLeaderboard(mapId);
-
-    const previousForThisName = boardBefore.find((entry) => {
-        return normalizeName(entry.playerName) === normalizedName;
-    }) || null;
-
-    const currentRunEntry = {
-        playerName: normalizedName,
-
-        bestDistance: numericDistance,
-        bestReason: reason,
-        bestAt: now,
-        bestFinished: isFinished,
-        bestElapsedMs: numericElapsed,
-
-        lastDistance: numericDistance,
-        lastReason: reason,
-        lastFinished: isFinished,
-        lastElapsedMs: numericElapsed,
-
-        updatedAt: now,
-
-        date: mapData?.date || mapData?.marketDate || mapMeta?.date || mapMeta?.marketDate || 'unknown',
-        marketDate: mapData?.marketDate || mapData?.date || mapMeta?.marketDate || mapMeta?.date || 'unknown',
-        symbol: mapData?.symbol || mapMeta?.symbol || '',
-        label: mapData?.label || mapMeta?.label || '',
-        interval: mapData?.interval || mapMeta?.interval || '',
-        mode: mapData?.mode || mapMeta?.mode || '',
-        difficulty: mapData?.difficulty || mapMeta?.difficulty || null
-    };
-
-    /*
-      핵심 수정:
-      이전 맵 전체 최고기록을 참조하지 않는다.
-      오직 같은 닉네임의 기존 기록과만 비교한다.
-    */
-    const bestForThisName = isEntryABetter(currentRunEntry, previousForThisName)
-        ? currentRunEntry
-        : {
-            ...previousForThisName,
-            lastDistance: numericDistance,
-            lastReason: reason,
-            lastFinished: isFinished,
-            lastElapsedMs: numericElapsed,
-            updatedAt: now
-        };
-
-    const boardWithoutSameName = boardBefore.filter((entry) => {
-        return normalizeName(entry.playerName) !== normalizedName;
-    });
-
-    const boardAfter = dedupeLeaderboardByName([
-        ...boardWithoutSameName,
-        bestForThisName
-    ]);
-
-    writeRawLeaderboard(mapId, boardAfter);
-
-    const rankIndex = boardAfter.findIndex((entry) => {
-        return normalizeName(entry.playerName) === normalizedName;
-    });
-
-    const isNewBest = isEntryABetter(currentRunEntry, previousForThisName);
-
-    return {
-        record: bestForThisName,
-        previous: previousForThisName,
-        leaderboard: boardAfter,
-        rank: rankIndex >= 0 ? rankIndex + 1 : null,
-        isNewBest,
-        previousBest: previousForThisName?.bestDistance || 0
-    };
-}
-
-export function readAllLocalRecords(mapMetas = []) {
-    const records = [];
-
-    for (const meta of mapMetas) {
-        if (!meta?.mapId) {
-            continue;
-        }
-
-        const leaderboard = readLocalLeaderboard(meta.mapId);
-        const ownRecord = readLocalRecord(meta.mapId);
-
-        if (ownRecord) {
-            records.push({
-                ...ownRecord,
-                mapId: meta.mapId,
-                date: meta.date || ownRecord.date || 'unknown',
-                marketDate: meta.marketDate || meta.date || ownRecord.marketDate || 'unknown',
-                symbol: meta.symbol || ownRecord.symbol || '',
-                label: meta.label || ownRecord.label || '',
-                interval: meta.interval || ownRecord.interval || '',
-                mode: meta.mode || ownRecord.mode || '',
-                difficulty: meta.difficulty || ownRecord.difficulty || null,
-                leaderboard
-            });
-        }
-    }
-
-    records.sort((a, b) => {
-        const dateCompare = String(b.date || '').localeCompare(String(a.date || ''));
-
-        if (dateCompare !== 0) {
-            return dateCompare;
-        }
-
-        return String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
-    });
-
-    return records;
-}
-
-/*
-  실제 게임 UI에는 노출하지 않는다.
-  개발 중 콘솔/디버그용으로만 사용.
-*/
-export function clearLocalRecord(mapId) {
-    const store = getStorage();
-
-    if (!store || !mapId) {
-        return;
-    }
-
-    store.removeItem(getLeaderboardKey(mapId));
-}
-
-export function clearAllLocalRecords() {
-    const store = getStorage();
-
-    if (!store) {
-        return;
-    }
-
-    const keysToRemove = [];
-
-    for (let i = 0; i < store.length; i++) {
-        const key = store.key(i);
-
-        if (
-            key &&
-            (
-                key.startsWith(BOARD_PREFIX) ||
-                key.startsWith('tm_best_')
-            )
-        ) {
-            keysToRemove.push(key);
-        }
-    }
-
-    for (const key of keysToRemove) {
-        store.removeItem(key);
-    }
 }

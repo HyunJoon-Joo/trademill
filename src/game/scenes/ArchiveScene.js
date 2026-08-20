@@ -1,9 +1,23 @@
 import Phaser from 'phaser';
+import { trademillAudio } from '../audio/TrademillAudio';
+import { fetchDataJson, MAP_INDEX_PATH } from '../config/dataConfig';
+import { VISUAL_THEME } from '../config/visualTheme';
 import {
     formatElapsedMs,
-    getLeaderboard,
-    getPlayerBest
+    getLeaderboardResult
 } from '../services/rankingService';
+import {
+    applyNacreTint,
+    createLacquerBackground,
+    createNacreButton,
+    createNacrePanel,
+    createNacreText
+} from '../utils/visualEffects';
+import {
+    getMapDate,
+    normalizeMapIndex,
+    sortMapsOldestToNewest
+} from '../utils/mapDataUtils';
 
 export class ArchiveScene extends Phaser.Scene {
     constructor() {
@@ -15,6 +29,9 @@ export class ArchiveScene extends Phaser.Scene {
         this.maps = [];
         this.selectedIndex = 0;
         this.uiObjects = [];
+        this.sceneAlive = true;
+        this.renderToken = 0;
+        this.refreshController = null;
 
         this.leftKey = null;
         this.rightKey = null;
@@ -23,126 +40,192 @@ export class ArchiveScene extends Phaser.Scene {
     }
 
     create() {
-        this.cameras.main.setBackgroundColor('#0f172a');
-
-        this.mapIndex = this.registry.get('mapIndex');
-
-        const rawMaps = Array.isArray(this.mapIndex?.maps) ? this.mapIndex.maps : [];
-
-        this.maps = [...rawMaps].sort((a, b) => {
-            const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
-
-            if (dateCompare !== 0) {
-                return dateCompare;
-            }
-
-            return String(a.generatedAt || '').localeCompare(String(b.generatedAt || ''));
+        this.cameras.main.setBackgroundColor(VISUAL_THEME.lacquer.base);
+        createLacquerBackground(this, {
+            seed: 'ArchiveScene',
+            depth: VISUAL_THEME.depth.background
         });
-
-        if (this.maps.length > 0) {
-            const latestIndex = this.maps.findIndex((m) => m.mapId === this.mapIndex?.latestMapId);
-            this.selectedIndex = latestIndex >= 0 ? latestIndex : this.maps.length - 1;
-        }
 
         this.leftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT);
         this.rightKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT);
         this.enterKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
         this.backKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
 
-        this.drawBackground();
-        this.renderArchive();
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+            this.sceneAlive = false;
+            this.renderToken += 1;
+            this.refreshController?.abort();
+            this.refreshController = null;
+            this.clearUi();
+        });
+
+        this.loadLatestIndexAndRender();
     }
 
     update() {
+        if (!this.sceneAlive || this.maps.length === 0) {
+            if (Phaser.Input.Keyboard.JustDown(this.backKey)) {
+                trademillAudio.playUiClick();
+                this.scene.start('MenuScene');
+            }
+            return;
+        }
+
         if (Phaser.Input.Keyboard.JustDown(this.leftKey)) {
+            trademillAudio.playUiClick();
             this.selectPreviousMap();
         }
 
         if (Phaser.Input.Keyboard.JustDown(this.rightKey)) {
+            trademillAudio.playUiClick();
             this.selectNextMap();
         }
 
         if (Phaser.Input.Keyboard.JustDown(this.enterKey)) {
+            trademillAudio.playUiClick();
             this.playSelectedMap();
         }
 
         if (Phaser.Input.Keyboard.JustDown(this.backKey)) {
+            trademillAudio.playUiClick();
             this.scene.start('MenuScene');
         }
     }
 
-    drawBackground() {
-        this.add.rectangle(0, 0, 1280, 720, 0x0f172a).setOrigin(0, 0);
-        this.add.rectangle(0, 500, 1280, 220, 0x111827).setOrigin(0, 0);
-
-        for (let i = 0; i < 30; i++) {
-            const x = i * 48;
-            const y = 548 + Math.sin(i * 0.75) * 32;
-            this.add.circle(x, y, 3, 0x334155, 0.8);
-        }
-    }
-
     clearUi() {
-        for (const obj of this.uiObjects) {
-            if (obj && obj.destroy) {
-                obj.destroy();
-            }
+        for (const object of this.uiObjects) {
+            object?.destroy?.();
         }
 
         this.uiObjects = [];
     }
 
-    addUi(obj) {
-        this.uiObjects.push(obj);
-        return obj;
+    addUi(object) {
+        this.uiObjects.push(object);
+        return object;
+    }
+
+    async loadLatestIndexAndRender() {
+        const previousSelectedMapId = this.getSelectedMap()?.mapId || '';
+        this.clearUi();
+        this.addUi(createNacrePanel(this, 640, 330, 520, 112, {
+            phase: 2,
+            fillAlpha: 0.72
+        }));
+        this.addUi(
+            createNacreText(this, 640, 330, 'UPDATING ARCHIVE...', {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '25px'
+            }, {
+                phase: 2
+            }).setOrigin(0.5)
+        );
+
+        this.refreshController?.abort();
+        this.refreshController = new AbortController();
+
+        try {
+            const rawIndex = await fetchDataJson(MAP_INDEX_PATH, {
+                signal: this.refreshController.signal
+            });
+            this.mapIndex = normalizeMapIndex(rawIndex);
+            this.registry.set('mapIndex', this.mapIndex);
+        } catch (error) {
+            console.warn('Archive 최신 인덱스 갱신 실패. Registry 데이터를 사용합니다.', error);
+            this.mapIndex = this.registry.get('mapIndex') || null;
+        }
+
+        if (!this.sceneAlive) {
+            return;
+        }
+
+        this.maps = sortMapsOldestToNewest(this.mapIndex?.maps);
+
+        if (this.maps.length > 0) {
+            const selectedByPrevious = this.maps.findIndex(
+                (map) => map.mapId === previousSelectedMapId
+            );
+            const selectedByLatest = this.maps.findIndex(
+                (map) => map.mapId === this.mapIndex?.latestMapId
+            );
+
+            this.selectedIndex = selectedByPrevious >= 0
+                ? selectedByPrevious
+                : selectedByLatest >= 0
+                    ? selectedByLatest
+                    : this.maps.length - 1;
+        }
+
+        await this.renderArchive();
     }
 
     async renderArchive() {
+        const token = ++this.renderToken;
         this.clearUi();
 
-        const title = this.add.text(640, 52, 'MARKET ARCHIVE', {
-            fontFamily: 'Arial',
-            fontSize: '42px',
-            color: '#ffffff'
-        }).setOrigin(0.5);
+        this.addUi(
+            createNacreText(this, 640, 48, 'MARKET ARCHIVE', {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '42px',
+                fontStyle: 'bold'
+            }, {
+                phase: 1
+            }).setOrigin(0.5)
+        );
 
-        const subtitle = this.add.text(640, 91, 'Left is older. Right is newer. Ranking is shown vertically.', {
-            fontFamily: 'Arial',
-            fontSize: '18px',
-            color: '#93c5fd'
-        }).setOrigin(0.5);
-
-        this.addUi(title);
-        this.addUi(subtitle);
+        this.addUi(
+            createNacreText(
+                this,
+                640,
+                88,
+                'KOSPI / 1-MINUTE MAPS · LEFT OLDER / RIGHT NEWER · EACH DATE HAS ITS OWN RANKING',
+                {
+                    fontFamily: VISUAL_THEME.text.bodyFont,
+                    fontSize: '17px',
+                    color: VISUAL_THEME.text.secondary
+                },
+                {
+                    nacre: false
+                }
+            ).setOrigin(0.5)
+        );
 
         if (this.maps.length === 0) {
-            const empty = this.add.text(640, 330, 'No market maps found.', {
-                fontFamily: 'Arial',
-                fontSize: '28px',
-                color: '#f87171'
-            }).setOrigin(0.5);
+            this.addUi(
+                createNacreText(this, 640, 330, 'No market maps found.', {
+                    fontFamily: VISUAL_THEME.text.bodyFont,
+                    fontSize: '28px',
+                    color: VISUAL_THEME.text.danger
+                }, {
+                    nacre: false
+                }).setOrigin(0.5)
+            );
 
-            this.addUi(empty);
             this.createButton(640, 620, 220, 48, 'BACK', () => {
                 this.scene.start('MenuScene');
-            });
-
+            }, 20, 5);
             return;
         }
 
         this.drawMapCarousel();
-        await this.drawSelectedMapInfo();
-        await this.drawRankingPanel();
+
+        const map = this.getSelectedMap();
+        const rankingResult = await getLeaderboardResult(map.mapId);
+
+        if (!this.sceneAlive || token !== this.renderToken) {
+            return;
+        }
+
+        this.drawSelectedMapInfo(map);
+        this.drawRankingPanel(rankingResult);
         this.drawBottomButtons();
     }
 
     drawMapCarousel() {
         const centerX = 640;
-        const y = 165;
+        const y = 162;
 
-        const visibleOffsets = [-2, -1, 0, 1, 2];
-
-        for (const offset of visibleOffsets) {
+        for (const offset of [-2, -1, 0, 1, 2]) {
             const index = this.selectedIndex + offset;
 
             if (index < 0 || index >= this.maps.length) {
@@ -150,184 +233,167 @@ export class ArchiveScene extends Phaser.Scene {
             }
 
             const map = this.maps[index];
-            const isSelected = offset === 0;
-
+            const selected = offset === 0;
             const x = centerX + offset * 210;
-            const width = isSelected ? 190 : 170;
-            const height = isSelected ? 86 : 70;
-
-            const bgColor = isSelected ? 0x2563eb : 0x1e293b;
-            const strokeColor = isSelected ? 0xbfdbfe : 0x64748b;
-
-            const container = this.add.container(x, y);
-
-            const bg = this.add.rectangle(0, 0, width, height, bgColor, 1)
-                .setStrokeStyle(2, strokeColor, 1)
+            const width = selected ? 190 : 170;
+            const height = selected ? 86 : 70;
+            const container = createNacrePanel(this, x, y, width, height, {
+                phase: index,
+                fillAlpha: selected ? 0.92 : 0.68,
+                glowAlpha: selected ? 0.26 : 0.05,
+                coreAlpha: selected ? 0.98 : 0.34,
+                glowWidth: selected ? 10 : 5,
+                coreWidth: selected ? 2.2 : 1.2
+            });
+            const hitArea = this.add.rectangle(x, y, width, height, 0xffffff, 0.001)
                 .setInteractive({ useHandCursor: true });
 
-            const dateText = this.add.text(0, -16, map.date || 'unknown', {
-                fontFamily: 'Arial',
-                fontSize: isSelected ? '20px' : '17px',
-                color: '#ffffff'
+            const dateText = createNacreText(this, x, y, getMapDate(map, map), {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: selected ? '21px' : '17px',
+                color: VISUAL_THEME.text.primary
+            }, {
+                nacre: selected,
+                phase: index
             }).setOrigin(0.5);
 
-            const diff = map.difficulty?.score
-                ? `D ${map.difficulty.score}`
-                : 'D ?';
-
-            const subText = this.add.text(0, 17, `${map.interval} / ${diff}`, {
-                fontFamily: 'Arial',
-                fontSize: isSelected ? '16px' : '14px',
-                color: '#cbd5e1'
-            }).setOrigin(0.5);
-
-            container.add(bg);
-            container.add(dateText);
-            container.add(subText);
-
-            bg.on('pointerdown', () => {
+            hitArea.on('pointerover', () => {
+                if (!selected) {
+                    applyNacreTint(dateText, index + 2);
+                }
+            });
+            hitArea.on('pointerdown', () => {
                 this.selectedIndex = index;
                 this.renderArchive();
             });
 
             this.addUi(container);
+            this.addUi(hitArea);
+            this.addUi(dateText);
         }
 
-        const leftHint = this.add.text(104, y, '←', {
-            fontFamily: 'Arial',
-            fontSize: '42px',
-            color: this.selectedIndex > 0 ? '#93c5fd' : '#334155'
-        }).setOrigin(0.5);
-
-        const rightHint = this.add.text(1176, y, '→', {
-            fontFamily: 'Arial',
-            fontSize: '42px',
-            color: this.selectedIndex < this.maps.length - 1 ? '#93c5fd' : '#334155'
-        }).setOrigin(0.5);
-
-        this.addUi(leftHint);
-        this.addUi(rightHint);
-
-        this.createSmallButton(136, y, 56, 48, '<', () => {
-            this.selectPreviousMap();
-        });
-
-        this.createSmallButton(1144, y, 56, 48, '>', () => {
-            this.selectNextMap();
-        });
+        this.createSmallButton(116, y, 58, 48, '<', () => this.selectPreviousMap(), 6);
+        this.createSmallButton(1164, y, 58, 48, '>', () => this.selectNextMap(), 2);
     }
 
-    async drawSelectedMapInfo() {
-        const map = this.getSelectedMap();
-
-        if (!map) {
-            return;
-        }
-
-        const difficulty = map.difficulty?.score
-            ? `${map.difficulty.score}`
-            : '?';
-
-        const record = await getPlayerBest(map.mapId);
-
-        let bestText = '-';
-
-        if (record?.bestFinished) {
-            bestText = `FINISH ${formatElapsedMs(record.bestElapsedMs)}`;
-        } else if (record) {
-            bestText = `DIST ${record.bestDistance}`;
-        }
-
-        const lines = [
-            `MAP ID: ${map.mapId}`,
-            `DATE: ${map.date}   SYMBOL: ${map.symbol}   INTERVAL: ${map.interval}`,
-            `DIFFICULTY: ${difficulty}   YOUR BEST: ${bestText}`
-        ];
-
-        const info = this.add.text(640, 255, lines.join('\n'), {
-            fontFamily: 'Arial',
-            fontSize: '18px',
-            color: '#cbd5e1',
-            align: 'center',
-            lineSpacing: 8
-        }).setOrigin(0.5);
-
-        this.addUi(info);
+    drawSelectedMapInfo(map) {
+        this.addUi(
+            createNacreText(this, 640, 252, getMapDate(map, map), {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '28px',
+                color: VISUAL_THEME.text.primary
+            }, {
+                phase: this.selectedIndex + 1
+            }).setOrigin(0.5)
+        );
     }
 
-    async drawRankingPanel() {
-        const map = this.getSelectedMap();
+    drawRankingPanel(rankingResult) {
+        this.addUi(createNacrePanel(this, 640, 442, 800, 248, {
+            phase: 3,
+            fillAlpha: 0.78,
+            glowAlpha: 0.09,
+            coreAlpha: 0.52
+        }));
 
-        if (!map) {
+        this.addUi(
+            createNacreText(this, 640, 330, 'RANKING 1-10', {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '24px'
+            }, {
+                phase: 3
+            }).setOrigin(0.5)
+        );
+
+        if (!rankingResult.ok) {
+            this.addUi(
+                createNacreText(
+                    this,
+                    640,
+                    442,
+                    `Ranking unavailable.\n${rankingResult.error}`,
+                    {
+                        fontFamily: VISUAL_THEME.text.bodyFont,
+                        fontSize: '19px',
+                        color: VISUAL_THEME.text.danger,
+                        align: 'center',
+                        wordWrap: { width: 700 }
+                    },
+                    {
+                        nacre: false
+                    }
+                ).setOrigin(0.5)
+            );
             return;
         }
 
-        const panel = this.add.rectangle(640, 430, 800, 250, 0x020617, 0.72)
-            .setStrokeStyle(2, 0x334155, 1);
-
-        const title = this.add.text(640, 320, 'RANKING 1-10', {
-            fontFamily: 'Arial',
-            fontSize: '24px',
-            color: '#ffffff'
-        }).setOrigin(0.5);
-
-        this.addUi(panel);
-        this.addUi(title);
-
-        const leaderboard = await getLeaderboard(map.mapId);
-
-        if (leaderboard.length === 0) {
-            const empty = this.add.text(640, 430, 'No ranking yet.\nPlay this map and leave a record.', {
-                fontFamily: 'Arial',
-                fontSize: '21px',
-                color: '#94a3b8',
-                align: 'center',
-                lineSpacing: 8
-            }).setOrigin(0.5);
-
-            this.addUi(empty);
+        if (rankingResult.leaderboard.length === 0) {
+            this.addUi(
+                createNacreText(
+                    this,
+                    640,
+                    442,
+                    'No ranking yet.\nPlay this map and leave a record.',
+                    {
+                        fontFamily: VISUAL_THEME.text.bodyFont,
+                        fontSize: '21px',
+                        color: VISUAL_THEME.text.muted,
+                        align: 'center',
+                        lineSpacing: 8
+                    },
+                    {
+                        nacre: false
+                    }
+                ).setOrigin(0.5)
+            );
             return;
         }
 
-        const rows = [];
+        /*
+          ResultScene과 동일하게 10줄을 하나의 Text로 묶지 않는다.
+          고정 간격으로 각각 그려 마지막 10위 줄이 패널 테두리에 걸리지 않게 한다.
+        */
+        const firstRowY = 365;
+        const rowStep = 18.5;
+        const rowX = 450;
 
-        for (let i = 0; i < 10; i++) {
-            const entry = leaderboard[i];
+        for (let index = 0; index < 10; index += 1) {
+            const entry = rankingResult.leaderboard[index];
+            let rowText = '';
 
             if (!entry) {
-                rows.push(`${String(i + 1).padStart(2, ' ')}. ---          ---`);
-                continue;
+                rowText = `${String(index + 1).padStart(2, ' ')}. ---          ---`;
+            } else {
+                const rank = String(index + 1).padStart(2, ' ');
+                const name = String(entry.playerName || 'YOU').padEnd(12, ' ');
+                const score = entry.bestFinished
+                    ? `FIN ${formatElapsedMs(entry.bestElapsedMs)}`
+                    : `DST ${String(entry.bestDistance || 0).padStart(5, ' ')}`;
+
+                rowText = `${rank}. ${name}  ${score}`;
             }
 
-            const rank = String(i + 1).padStart(2, ' ');
-            const name = String(entry.playerName || 'YOU').padEnd(12, ' ');
-
-            const score = entry.bestFinished
-                ? `FIN ${formatElapsedMs(entry.bestElapsedMs)}`
-                : `DST ${String(entry.bestDistance || 0).padStart(5, ' ')}`;
-
-            rows.push(`${rank}. ${name}  ${score}`);
+            this.addUi(
+                createNacreText(this, rowX, firstRowY + index * rowStep, rowText, {
+                    fontFamily: VISUAL_THEME.text.monoFont,
+                    fontSize: '18px',
+                    color: VISUAL_THEME.text.primary,
+                    align: 'left'
+                }, {
+                    nacre: false
+                }).setOrigin(0, 0.5)
+            );
         }
-
-        const body = this.add.text(640, 455, rows.join('\n'), {
-            fontFamily: 'Courier New',
-            fontSize: '19px',
-            color: '#e5e7eb',
-            align: 'left',
-            lineSpacing: 5
-        }).setOrigin(0.5);
-
-        this.addUi(body);
     }
 
     drawBottomButtons() {
         this.createButton(520, 650, 280, 50, 'PLAY THIS MAP', () => {
             this.playSelectedMap();
-        });
+        }, 20, 0);
 
         this.createButton(800, 650, 220, 50, 'BACK', () => {
             this.scene.start('MenuScene');
-        });
+        }, 20, 4);
     }
 
     getSelectedMap() {
@@ -335,7 +401,13 @@ export class ArchiveScene extends Phaser.Scene {
             return null;
         }
 
-        return this.maps[Phaser.Math.Clamp(this.selectedIndex, 0, this.maps.length - 1)];
+        const safeIndex = Phaser.Math.Clamp(
+            this.selectedIndex,
+            0,
+            this.maps.length - 1
+        );
+
+        return this.maps[safeIndex];
     }
 
     selectPreviousMap() {
@@ -359,50 +431,28 @@ export class ArchiveScene extends Phaser.Scene {
     playSelectedMap() {
         const map = this.getSelectedMap();
 
-        if (!map) {
-            return;
+        if (map) {
+            this.scene.start('GameScene', { mapMeta: map });
         }
-
-        this.scene.start('GameScene', { mapMeta: map });
     }
 
-    createButton(x, y, width, height, label, onClick, fontSize = 20) {
-        const container = this.add.container(x, y);
-
-        const bg = this.add.rectangle(0, 0, width, height, 0x1e293b, 1)
-            .setStrokeStyle(2, 0x64748b, 1)
-            .setInteractive({ useHandCursor: true });
-
-        const text = this.add.text(0, 0, label, {
-            fontFamily: 'Arial',
-            fontSize: `${fontSize}px`,
-            color: '#ffffff',
-            align: 'center',
-            wordWrap: { width: width - 28 }
-        }).setOrigin(0.5);
-
-        container.add(bg);
-        container.add(text);
-
-        bg.on('pointerover', () => {
-            bg.setFillStyle(0x334155, 1);
-            bg.setStrokeStyle(2, 0x93c5fd, 1);
+    createButton(x, y, width, height, label, onClick, fontSize = 20, phase = 0) {
+        const button = createNacreButton(this, {
+            x,
+            y,
+            width,
+            height,
+            label,
+            onClick,
+            fontSize,
+            phase
         });
 
-        bg.on('pointerout', () => {
-            bg.setFillStyle(0x1e293b, 1);
-            bg.setStrokeStyle(2, 0x64748b, 1);
-        });
-
-        bg.on('pointerdown', () => {
-            onClick();
-        });
-
-        this.addUi(container);
-        return container;
+        this.addUi(button);
+        return button;
     }
 
-    createSmallButton(x, y, width, height, label, onClick) {
-        return this.createButton(x, y, width, height, label, onClick, 24);
+    createSmallButton(x, y, width, height, label, onClick, phase = 0) {
+        return this.createButton(x, y, width, height, label, onClick, 24, phase);
     }
 }

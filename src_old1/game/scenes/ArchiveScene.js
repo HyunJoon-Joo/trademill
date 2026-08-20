@@ -1,0 +1,497 @@
+import Phaser from 'phaser';
+import { fetchDataJson, MAP_INDEX_PATH } from '../config/dataConfig';
+import { VISUAL_THEME } from '../config/visualTheme';
+import {
+    formatElapsedMs,
+    getLeaderboardResult,
+    getPlayerBest
+} from '../services/rankingService';
+import {
+    applyNacreTint,
+    createLacquerBackground,
+    createNacreButton,
+    createNacrePanel,
+    createNacreText
+} from '../utils/visualEffects';
+import {
+    getMapDate,
+    normalizeMapIndex,
+    sortMapsOldestToNewest
+} from '../utils/mapDataUtils';
+
+export class ArchiveScene extends Phaser.Scene {
+    constructor() {
+        super('ArchiveScene');
+    }
+
+    init() {
+        this.mapIndex = null;
+        this.maps = [];
+        this.selectedIndex = 0;
+        this.uiObjects = [];
+        this.sceneAlive = true;
+        this.renderToken = 0;
+        this.refreshController = null;
+
+        this.leftKey = null;
+        this.rightKey = null;
+        this.enterKey = null;
+        this.backKey = null;
+    }
+
+    create() {
+        this.cameras.main.setBackgroundColor(VISUAL_THEME.lacquer.base);
+        createLacquerBackground(this, {
+            seed: 'ArchiveScene',
+            depth: VISUAL_THEME.depth.background
+        });
+
+        this.leftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.LEFT);
+        this.rightKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.RIGHT);
+        this.enterKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ENTER);
+        this.backKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+            this.sceneAlive = false;
+            this.renderToken += 1;
+            this.refreshController?.abort();
+            this.refreshController = null;
+            this.clearUi();
+        });
+
+        this.loadLatestIndexAndRender();
+    }
+
+    update() {
+        if (!this.sceneAlive || this.maps.length === 0) {
+            if (Phaser.Input.Keyboard.JustDown(this.backKey)) {
+                this.scene.start('MenuScene');
+            }
+            return;
+        }
+
+        if (Phaser.Input.Keyboard.JustDown(this.leftKey)) {
+            this.selectPreviousMap();
+        }
+
+        if (Phaser.Input.Keyboard.JustDown(this.rightKey)) {
+            this.selectNextMap();
+        }
+
+        if (Phaser.Input.Keyboard.JustDown(this.enterKey)) {
+            this.playSelectedMap();
+        }
+
+        if (Phaser.Input.Keyboard.JustDown(this.backKey)) {
+            this.scene.start('MenuScene');
+        }
+    }
+
+    clearUi() {
+        for (const object of this.uiObjects) {
+            object?.destroy?.();
+        }
+
+        this.uiObjects = [];
+    }
+
+    addUi(object) {
+        this.uiObjects.push(object);
+        return object;
+    }
+
+    async loadLatestIndexAndRender() {
+        const previousSelectedMapId = this.getSelectedMap()?.mapId || '';
+        this.clearUi();
+        this.addUi(createNacrePanel(this, 640, 330, 520, 112, {
+            phase: 2,
+            fillAlpha: 0.72
+        }));
+        this.addUi(
+            createNacreText(this, 640, 330, 'UPDATING ARCHIVE...', {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '25px'
+            }, {
+                phase: 2
+            }).setOrigin(0.5)
+        );
+
+        this.refreshController?.abort();
+        this.refreshController = new AbortController();
+
+        try {
+            const rawIndex = await fetchDataJson(MAP_INDEX_PATH, {
+                signal: this.refreshController.signal
+            });
+            this.mapIndex = normalizeMapIndex(rawIndex);
+            this.registry.set('mapIndex', this.mapIndex);
+        } catch (error) {
+            console.warn('Archive 최신 인덱스 갱신 실패. Registry 데이터를 사용합니다.', error);
+            this.mapIndex = this.registry.get('mapIndex') || null;
+        }
+
+        if (!this.sceneAlive) {
+            return;
+        }
+
+        this.maps = sortMapsOldestToNewest(this.mapIndex?.maps);
+
+        if (this.maps.length > 0) {
+            const selectedByPrevious = this.maps.findIndex(
+                (map) => map.mapId === previousSelectedMapId
+            );
+            const selectedByLatest = this.maps.findIndex(
+                (map) => map.mapId === this.mapIndex?.latestMapId
+            );
+
+            this.selectedIndex = selectedByPrevious >= 0
+                ? selectedByPrevious
+                : selectedByLatest >= 0
+                    ? selectedByLatest
+                    : this.maps.length - 1;
+        }
+
+        await this.renderArchive();
+    }
+
+    async renderArchive() {
+        const token = ++this.renderToken;
+        this.clearUi();
+
+        this.addUi(
+            createNacreText(this, 640, 48, 'MARKET ARCHIVE', {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '42px',
+                fontStyle: 'bold'
+            }, {
+                phase: 1
+            }).setOrigin(0.5)
+        );
+
+        this.addUi(
+            createNacreText(
+                this,
+                640,
+                88,
+                'Left is older. Right is newer. Every mapId has a separate ranking.',
+                {
+                    fontFamily: VISUAL_THEME.text.bodyFont,
+                    fontSize: '17px',
+                    color: VISUAL_THEME.text.secondary
+                },
+                {
+                    nacre: false
+                }
+            ).setOrigin(0.5)
+        );
+
+        if (this.maps.length === 0) {
+            this.addUi(
+                createNacreText(this, 640, 330, 'No market maps found.', {
+                    fontFamily: VISUAL_THEME.text.bodyFont,
+                    fontSize: '28px',
+                    color: VISUAL_THEME.text.danger
+                }, {
+                    nacre: false
+                }).setOrigin(0.5)
+            );
+
+            this.createButton(640, 620, 220, 48, 'BACK', () => {
+                this.scene.start('MenuScene');
+            }, 20, 5);
+            return;
+        }
+
+        this.drawMapCarousel();
+
+        const map = this.getSelectedMap();
+        const [record, rankingResult] = await Promise.all([
+            getPlayerBest(map.mapId),
+            getLeaderboardResult(map.mapId)
+        ]);
+
+        if (!this.sceneAlive || token !== this.renderToken) {
+            return;
+        }
+
+        this.drawSelectedMapInfo(map, record);
+        this.drawRankingPanel(rankingResult);
+        this.drawBottomButtons();
+    }
+
+    drawMapCarousel() {
+        const centerX = 640;
+        const y = 162;
+
+        for (const offset of [-2, -1, 0, 1, 2]) {
+            const index = this.selectedIndex + offset;
+
+            if (index < 0 || index >= this.maps.length) {
+                continue;
+            }
+
+            const map = this.maps[index];
+            const selected = offset === 0;
+            const x = centerX + offset * 210;
+            const width = selected ? 190 : 170;
+            const height = selected ? 86 : 70;
+            const container = createNacrePanel(this, x, y, width, height, {
+                phase: index,
+                fillAlpha: selected ? 0.92 : 0.68,
+                glowAlpha: selected ? 0.26 : 0.05,
+                coreAlpha: selected ? 0.98 : 0.34,
+                glowWidth: selected ? 10 : 5,
+                coreWidth: selected ? 2.2 : 1.2
+            });
+            const hitArea = this.add.rectangle(x, y, width, height, 0xffffff, 0.001)
+                .setInteractive({ useHandCursor: true });
+
+            const dateText = createNacreText(this, x, y - 16, getMapDate(map, map), {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: selected ? '20px' : '17px',
+                color: VISUAL_THEME.text.primary
+            }, {
+                nacre: selected,
+                phase: index
+            }).setOrigin(0.5);
+
+            const difficulty = map.difficulty?.score
+                ? `D ${map.difficulty.score}`
+                : 'D ?';
+
+            const subText = createNacreText(
+                this,
+                x,
+                y + 17,
+                `${map.symbol || 'MARKET'} / ${map.interval || '?'} / ${difficulty}`,
+                {
+                    fontFamily: VISUAL_THEME.text.bodyFont,
+                    fontSize: selected ? '15px' : '13px',
+                    color: selected
+                        ? VISUAL_THEME.text.secondary
+                        : VISUAL_THEME.text.muted
+                },
+                {
+                    nacre: false
+                }
+            ).setOrigin(0.5);
+
+            hitArea.on('pointerover', () => {
+                if (!selected) {
+                    applyNacreTint(dateText, index + 2);
+                }
+            });
+            hitArea.on('pointerdown', () => {
+                this.selectedIndex = index;
+                this.renderArchive();
+            });
+
+            this.addUi(container);
+            this.addUi(hitArea);
+            this.addUi(dateText);
+            this.addUi(subText);
+        }
+
+        this.createSmallButton(116, y, 58, 48, '<', () => this.selectPreviousMap(), 6);
+        this.createSmallButton(1164, y, 58, 48, '>', () => this.selectNextMap(), 2);
+    }
+
+    drawSelectedMapInfo(map, record) {
+        const difficulty = map.difficulty?.score ?? '?';
+        let bestText = '-';
+
+        if (record?.bestFinished) {
+            bestText = `FINISH ${formatElapsedMs(record.bestElapsedMs)}`;
+        } else if (record) {
+            bestText = `DIST ${record.bestDistance}`;
+        }
+
+        const lines = [
+            `MAP ID: ${map.mapId}`,
+            `DATE: ${getMapDate(map, map)}   SYMBOL: ${map.symbol || '-'}   INTERVAL: ${map.interval || '-'}`,
+            `DIFFICULTY: ${difficulty}   YOUR BEST: ${bestText}`
+        ];
+
+        this.addUi(createNacrePanel(this, 640, 255, 980, 98, {
+            phase: this.selectedIndex + 1,
+            fillAlpha: 0.58,
+            glowAlpha: 0.05,
+            coreAlpha: 0.28
+        }));
+
+        this.addUi(
+            createNacreText(this, 640, 255, lines.join('\n'), {
+                fontFamily: VISUAL_THEME.text.monoFont,
+                fontSize: '17px',
+                color: VISUAL_THEME.text.secondary,
+                align: 'center',
+                lineSpacing: 8
+            }, {
+                nacre: false
+            }).setOrigin(0.5)
+        );
+    }
+
+    drawRankingPanel(rankingResult) {
+        this.addUi(createNacrePanel(this, 640, 442, 800, 248, {
+            phase: 3,
+            fillAlpha: 0.78,
+            glowAlpha: 0.09,
+            coreAlpha: 0.52
+        }));
+
+        this.addUi(
+            createNacreText(this, 640, 330, 'RANKING 1-10', {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '24px'
+            }, {
+                phase: 3
+            }).setOrigin(0.5)
+        );
+
+        if (!rankingResult.ok) {
+            this.addUi(
+                createNacreText(
+                    this,
+                    640,
+                    442,
+                    `Ranking unavailable.\n${rankingResult.error}`,
+                    {
+                        fontFamily: VISUAL_THEME.text.bodyFont,
+                        fontSize: '19px',
+                        color: VISUAL_THEME.text.danger,
+                        align: 'center',
+                        wordWrap: { width: 700 }
+                    },
+                    {
+                        nacre: false
+                    }
+                ).setOrigin(0.5)
+            );
+            return;
+        }
+
+        if (rankingResult.leaderboard.length === 0) {
+            this.addUi(
+                createNacreText(
+                    this,
+                    640,
+                    442,
+                    'No ranking yet.\nPlay this map and leave a record.',
+                    {
+                        fontFamily: VISUAL_THEME.text.bodyFont,
+                        fontSize: '21px',
+                        color: VISUAL_THEME.text.muted,
+                        align: 'center',
+                        lineSpacing: 8
+                    },
+                    {
+                        nacre: false
+                    }
+                ).setOrigin(0.5)
+            );
+            return;
+        }
+
+        const rows = [];
+
+        for (let index = 0; index < 10; index += 1) {
+            const entry = rankingResult.leaderboard[index];
+
+            if (!entry) {
+                rows.push(`${String(index + 1).padStart(2, ' ')}. ---          ---`);
+                continue;
+            }
+
+            const rank = String(index + 1).padStart(2, ' ');
+            const name = String(entry.playerName || 'YOU').padEnd(12, ' ');
+            const score = entry.bestFinished
+                ? `FIN ${formatElapsedMs(entry.bestElapsedMs)}`
+                : `DST ${String(entry.bestDistance || 0).padStart(5, ' ')}`;
+
+            rows.push(`${rank}. ${name}  ${score}`);
+        }
+
+        this.addUi(
+            createNacreText(this, 640, 463, rows.join('\n'), {
+                fontFamily: VISUAL_THEME.text.monoFont,
+                fontSize: '19px',
+                color: VISUAL_THEME.text.primary,
+                align: 'left',
+                lineSpacing: 5
+            }, {
+                nacre: false
+            }).setOrigin(0.5)
+        );
+    }
+
+    drawBottomButtons() {
+        this.createButton(520, 650, 280, 50, 'PLAY THIS MAP', () => {
+            this.playSelectedMap();
+        }, 20, 0);
+
+        this.createButton(800, 650, 220, 50, 'BACK', () => {
+            this.scene.start('MenuScene');
+        }, 20, 4);
+    }
+
+    getSelectedMap() {
+        if (this.maps.length === 0) {
+            return null;
+        }
+
+        const safeIndex = Phaser.Math.Clamp(
+            this.selectedIndex,
+            0,
+            this.maps.length - 1
+        );
+
+        return this.maps[safeIndex];
+    }
+
+    selectPreviousMap() {
+        if (this.selectedIndex <= 0) {
+            return;
+        }
+
+        this.selectedIndex -= 1;
+        this.renderArchive();
+    }
+
+    selectNextMap() {
+        if (this.selectedIndex >= this.maps.length - 1) {
+            return;
+        }
+
+        this.selectedIndex += 1;
+        this.renderArchive();
+    }
+
+    playSelectedMap() {
+        const map = this.getSelectedMap();
+
+        if (map) {
+            this.scene.start('GameScene', { mapMeta: map });
+        }
+    }
+
+    createButton(x, y, width, height, label, onClick, fontSize = 20, phase = 0) {
+        const button = createNacreButton(this, {
+            x,
+            y,
+            width,
+            height,
+            label,
+            onClick,
+            fontSize,
+            phase
+        });
+
+        this.addUi(button);
+        return button;
+    }
+
+    createSmallButton(x, y, width, height, label, onClick, phase = 0) {
+        return this.createButton(x, y, width, height, label, onClick, 24, phase);
+    }
+}
