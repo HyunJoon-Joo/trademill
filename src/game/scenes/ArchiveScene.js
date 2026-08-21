@@ -289,7 +289,7 @@ export class ArchiveScene extends Phaser.Scene {
     }
 
     drawRankingPanel(rankingResult) {
-        this.addUi(createNacrePanel(this, 640, 442, 800, 248, {
+        this.addUi(createNacrePanel(this, 640, 445, 800, 290, {
             phase: 3,
             fillAlpha: 0.78,
             glowAlpha: 0.09,
@@ -297,7 +297,7 @@ export class ArchiveScene extends Phaser.Scene {
         }));
 
         this.addUi(
-            createNacreText(this, 640, 330, 'RANKING 1-10', {
+            createNacreText(this, 640, 318, 'RANKING 1-10', {
                 fontFamily: VISUAL_THEME.text.displayFont,
                 fontSize: '24px'
             }, {
@@ -353,36 +353,74 @@ export class ArchiveScene extends Phaser.Scene {
           ResultScene과 동일하게 10줄을 하나의 Text로 묶지 않는다.
           고정 간격으로 각각 그려 마지막 10위 줄이 패널 테두리에 걸리지 않게 한다.
         */
-        const firstRowY = 365;
-        const rowStep = 18.5;
-        const rowX = 450;
+        const firstRowY = 350;
+        const rowStep = 23;
 
-        for (let index = 0; index < 10; index += 1) {
-            const entry = rankingResult.leaderboard[index];
-            let rowText = '';
+        /*
+          랭킹 한 줄을 긴 문자열 하나로 만들지 않고, 각 값을 독립된 컬럼으로 그린다.
+          이렇게 해야 이름 길이와 폰트 메트릭에 관계없이 NAME / DIST / TIME / RESULT 사이의
+          실제 화면 간격이 항상 고정된다.
 
-            if (!entry) {
-                rowText = `${String(index + 1).padStart(2, ' ')}. ---          ---`;
-            } else {
-                const rank = String(index + 1).padStart(2, ' ');
-                const name = String(entry.playerName || 'YOU').padEnd(12, ' ');
-                const score = entry.bestFinished
-                    ? `FIN ${formatElapsedMs(entry.bestElapsedMs)}`
-                    : `DST ${String(entry.bestDistance || 0).padStart(5, ' ')}`;
+          panel: x 240 ~ 1040
+          rank   : x 300
+          name   : x 360
+          dist   : x 610
+          time   : x 780
+          result : x 930
+        */
+        const columns = {
+            rank: 300,
+            name: 360,
+            distance: 610,
+            time: 780,
+            reason: 930
+        };
 
-                rowText = `${rank}. ${name}  ${score}`;
-            }
+        const rowTextStyle = {
+            fontFamily: VISUAL_THEME.text.monoFont,
+            fontSize: '18px',
+            color: VISUAL_THEME.text.primary,
+            align: 'left'
+        };
 
+        const addRankingCell = (x, y, text) => {
             this.addUi(
-                createNacreText(this, rowX, firstRowY + index * rowStep, rowText, {
-                    fontFamily: VISUAL_THEME.text.monoFont,
-                    fontSize: '18px',
-                    color: VISUAL_THEME.text.primary,
-                    align: 'left'
-                }, {
+                createNacreText(this, x, y, text, rowTextStyle, {
                     nacre: false
                 }).setOrigin(0, 0.5)
             );
+        };
+
+        for (let index = 0; index < 10; index += 1) {
+            const entry = rankingResult.leaderboard[index];
+            const y = firstRowY + index * rowStep;
+            const rankText = `${String(index + 1).padStart(2, ' ')}.`;
+
+            if (!entry) {
+                addRankingCell(columns.rank, y, rankText);
+                addRankingCell(columns.name, y, '---');
+                addRankingCell(columns.distance, y, 'D  -');
+                addRankingCell(columns.time, y, 'T --:--.-');
+                addRankingCell(columns.reason, y, '---');
+                continue;
+            }
+
+            const nameText = String(entry.playerName || 'YOU').slice(0, 12);
+            const distanceText = `D ${String(entry.bestDistance || 0).padStart(5, ' ')}`;
+            const elapsedText = entry.bestElapsedMs === null
+                ? '--:--.-'
+                : formatElapsedMs(entry.bestElapsedMs);
+            const timeText = `T ${String(elapsedText).padStart(7, ' ')}`;
+            const reasonText = formatRankingReason(
+                entry.bestReason,
+                entry.bestFinished
+            );
+
+            addRankingCell(columns.rank, y, rankText);
+            addRankingCell(columns.name, y, nameText);
+            addRankingCell(columns.distance, y, distanceText);
+            addRankingCell(columns.time, y, timeText);
+            addRankingCell(columns.reason, y, reasonText);
         }
     }
 

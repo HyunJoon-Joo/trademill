@@ -11,6 +11,21 @@ import {
     normalizeTerrainMap
 } from '../utils/mapDataUtils';
 import {
+    DESKTOP_GAME_HEIGHT,
+    DESKTOP_GAME_WIDTH,
+    MOBILE_GAME_HEIGHT,
+    MOBILE_GAME_WIDTH,
+    activateMobileGameplayControls,
+    consumeMobileLeftTap,
+    consumeMobileRightTap,
+    deactivateMobileGameplayControls,
+    isMobileLeftHeld,
+    isMobilePortraitEnvironment,
+    isMobileRightHeld,
+    resetMobileGameplayInput,
+    setMobileGameplayControlsEnabled
+} from '../utils/mobileControls';
+import {
     canUsePlayerSprite,
     createLacquerBackground,
     createNacreButton,
@@ -130,9 +145,17 @@ export class GameScene extends Phaser.Scene {
         this.cursors = null;
         this.menuKey = null;
         this.giveUpKey = null;
+
+        /*
+          모바일 세로 플레이 상태.
+          데스크톱은 기존 1280x720을 그대로 유지하고,
+          터치 가능한 세로 화면에서 GameScene에 들어왔을 때만 720x960으로 확장한다.
+        */
+        this.mobileGameplayLayout = false;
     }
 
     create() {
+        this.configureGameplayViewport();
         /*
           새 런에서는 오디오의 '피로도 100% 이후 RIGHT 무한 하강 누적'만
           초기화한다. 게임/비주얼 튜닝 수치는 건드리지 않는다.
@@ -151,10 +174,19 @@ export class GameScene extends Phaser.Scene {
         */
         createLacquerBackground(this, {
             seed: `GameScene-${this.selectedMapMeta?.mapId || 'latest'}`,
-            depth: VISUAL_THEME.depth.background
+            depth: VISUAL_THEME.depth.background,
+            width: this.scale.width,
+            height: this.scale.height
         });
 
-        createNacrePanel(this, 405, 70, 770, 126, {
+        const hudPanelX = this.mobileGameplayLayout
+            ? this.scale.width / 2
+            : 405;
+        const hudPanelWidth = this.mobileGameplayLayout
+            ? this.scale.width - 32
+            : 770;
+
+        createNacrePanel(this, hudPanelX, 70, hudPanelWidth, 126, {
             phase: 1,
             fillAlpha: 0.42,
             glowAlpha: 0.045,
@@ -190,6 +222,7 @@ export class GameScene extends Phaser.Scene {
             });
             this.detachCollisionEvents();
             this.clearRunObjects();
+            this.restoreGameplayViewport();
         });
 
         this.loadSelectedMarketMap();
@@ -197,6 +230,12 @@ export class GameScene extends Phaser.Scene {
 
     createHud() {
         const depth = VISUAL_THEME.depth.hud;
+        const viewWidth = this.scale.width;
+        const viewHeight = this.scale.height;
+        const centerX = viewWidth / 2;
+        const contentWidth = this.mobileGameplayLayout
+            ? Math.max(360, viewWidth - 48)
+            : 1230;
 
         this.distanceText = createNacreText(this, 24, 18, 'DIST: 0', {
             fontFamily: VISUAL_THEME.text.displayFont,
@@ -218,39 +257,50 @@ export class GameScene extends Phaser.Scene {
             fontFamily: VISUAL_THEME.text.monoFont,
             fontSize: '15px',
             color: VISUAL_THEME.text.muted,
-            wordWrap: { width: 1230 }
+            wordWrap: { width: contentWidth }
         }, {
             nacre: false
         }).setScrollFactor(0).setDepth(depth);
+
+        const controlGuide = this.mobileGameplayLayout
+            ? 'TOUCH →: CLIMB / TOUCH ←: BRAKE / HOLD ←: REVERSE / GIVE UP: TOP RIGHT'
+            : 'RIGHT tap/hold: climb / LEFT tap: brake / LEFT hold: reverse / G: give up / M: menu';
 
         this.infoText = createNacreText(
             this,
             24,
             102,
-            'RIGHT tap/hold: climb / LEFT tap: brake / LEFT hold: reverse / G: give up / M: menu',
+            controlGuide,
             {
                 fontFamily: VISUAL_THEME.text.bodyFont,
-                fontSize: '16px',
+                fontSize: this.mobileGameplayLayout ? '15px' : '16px',
                 color: VISUAL_THEME.text.secondary,
-                wordWrap: { width: 1230 }
+                wordWrap: { width: contentWidth }
             },
             {
                 nacre: false
             }
         ).setScrollFactor(0).setDepth(depth);
 
-        this.statusText = createNacreText(this, 640, 143, '', {
-            fontFamily: VISUAL_THEME.text.displayFont,
-            fontSize: '29px',
-            align: 'center'
-        }, {
-            phase: 4
-        }).setOrigin(0.5).setScrollFactor(0).setDepth(depth);
+        this.statusText = createNacreText(
+            this,
+            centerX,
+            this.mobileGameplayLayout ? 158 : 143,
+            '',
+            {
+                fontFamily: VISUAL_THEME.text.displayFont,
+                fontSize: '29px',
+                align: 'center'
+            },
+            {
+                phase: 4
+            }
+        ).setOrigin(0.5).setScrollFactor(0).setDepth(depth);
 
         this.loadingText = createNacreText(
             this,
-            640,
-            360,
+            centerX,
+            viewHeight / 2,
             'LOADING SELECTED MARKET MAP...',
             {
                 fontFamily: VISUAL_THEME.text.displayFont,
@@ -264,26 +314,113 @@ export class GameScene extends Phaser.Scene {
 
         /*
           게임 도중 포기 버튼.
-          G 키와 완전히 같은 openGiveUpPrompt()를 호출한다.
-          로딩 중이거나 이미 게임이 끝난 상태에서는 함수 내부에서 무시한다.
+          모바일에서도 화면 우측 상단에 남겨 두므로 G 키가 없는 터치 환경에서도
+          동일한 GIVE UP 확인창을 열 수 있다.
         */
         this.giveUpButton = createNacreButton(this, {
-            x: 1158,
+            x: this.mobileGameplayLayout ? viewWidth - 100 : 1158,
             y: 42,
-            width: 196,
+            width: this.mobileGameplayLayout ? 172 : 196,
             height: 44,
             label: 'GIVE UP [G]',
             onClick: () => this.openGiveUpPrompt(),
-            fontSize: 18,
+            fontSize: this.mobileGameplayLayout ? 16 : 18,
             phase: 5,
 
             /*
               G 키와 버튼 클릭이 openGiveUpPrompt() 하나로 합쳐져 있으므로
               클릭 코인은 openGiveUpPrompt()에서 한 번만 재생한다.
-              여기서 기본 clickSound까지 켜면 마우스 클릭만 코인이 2번 난다.
             */
             clickSound: false
         }).setScrollFactor(0).setDepth(depth + 2);
+    }
+
+    configureGameplayViewport() {
+        this.mobileGameplayLayout = isMobilePortraitEnvironment();
+
+        if (this.mobileGameplayLayout) {
+            /*
+              720x960 논리 화면을 사용하면 세로폰에서 1280x720 전체를 억지로 줄이는 것보다
+              플레이 영역과 HUD가 훨씬 크게 보이고, 위/아래 지형도 더 넓게 보인다.
+              물리 좌표와 튜닝값은 그대로이며 카메라가 보여주는 범위만 달라진다.
+            */
+            activateMobileGameplayControls();
+            this.scale.setGameSize(MOBILE_GAME_WIDTH, MOBILE_GAME_HEIGHT);
+            this.scale.refresh?.();
+            return;
+        }
+
+        deactivateMobileGameplayControls();
+
+        if (
+            this.scale.width !== DESKTOP_GAME_WIDTH ||
+            this.scale.height !== DESKTOP_GAME_HEIGHT
+        ) {
+            this.scale.setGameSize(DESKTOP_GAME_WIDTH, DESKTOP_GAME_HEIGHT);
+            this.scale.refresh?.();
+        }
+    }
+
+    restoreGameplayViewport() {
+        resetMobileGameplayInput();
+        deactivateMobileGameplayControls();
+
+        if (
+            this.mobileGameplayLayout &&
+            (
+                this.scale.width !== DESKTOP_GAME_WIDTH ||
+                this.scale.height !== DESKTOP_GAME_HEIGHT
+            )
+        ) {
+            this.scale.setGameSize(DESKTOP_GAME_WIDTH, DESKTOP_GAME_HEIGHT);
+            this.scale.refresh?.();
+        }
+
+        this.mobileGameplayLayout = false;
+    }
+
+    getCameraTargetScreenX() {
+        if (!this.mobileGameplayLayout) {
+            return GAME_TUNING.camera.targetScreenX;
+        }
+
+        /* 데스크톱과 같은 화면 가로 비율 위치에 플레이어를 둔다. */
+        return GAME_TUNING.camera.targetScreenX *
+            (MOBILE_GAME_WIDTH / DESKTOP_GAME_WIDTH);
+    }
+
+    getCameraTargetScreenY() {
+        if (!this.mobileGameplayLayout) {
+            return GAME_TUNING.camera.targetScreenY;
+        }
+
+        /* 늘어난 세로 영역의 절반만큼 아래로 보정해 플레이어를 자연스럽게 중앙화한다. */
+        return GAME_TUNING.camera.targetScreenY +
+            (MOBILE_GAME_HEIGHT - DESKTOP_GAME_HEIGHT) / 2;
+    }
+
+    isLeftControlHeld() {
+        return !!this.cursors?.left?.isDown || isMobileLeftHeld();
+    }
+
+    isRightControlHeld() {
+        return !!this.cursors?.right?.isDown || isMobileRightHeld();
+    }
+
+    consumeLeftControlTap() {
+        const keyboardTapped = !!this.cursors?.left &&
+            Phaser.Input.Keyboard.JustDown(this.cursors.left);
+        const mobileTapped = consumeMobileLeftTap();
+
+        return keyboardTapped || mobileTapped;
+    }
+
+    consumeRightControlTap() {
+        const keyboardTapped = !!this.cursors?.right &&
+            Phaser.Input.Keyboard.JustDown(this.cursors.right);
+        const mobileTapped = consumeMobileRightTap();
+
+        return keyboardTapped || mobileTapped;
     }
 
     createInput() {
@@ -393,6 +530,7 @@ export class GameScene extends Phaser.Scene {
             this.setMarketInfoText(mapData);
 
             this.worldReady = true;
+            resetMobileGameplayInput();
             this.resetRun();
 
             this.loadingText?.setText('MARKET MAP LOADED');
@@ -458,6 +596,10 @@ export class GameScene extends Phaser.Scene {
         }
 
         if (!this.worldReady || !this.wheelBody) {
+            if (this.mobileGameplayLayout) {
+                consumeMobileLeftTap();
+                consumeMobileRightTap();
+            }
             return;
         }
 
@@ -514,7 +656,7 @@ export class GameScene extends Phaser.Scene {
             : 0;
         const playerFollowX =
             GAME_TUNING.camera.horizontalFollowEnabled && this.wheelBody
-                ? this.wheelBody.position.x - GAME_TUNING.camera.targetScreenX
+                ? this.wheelBody.position.x - this.getCameraTargetScreenX()
                 : 0;
         const desiredScrollX = Math.max(0, autoScrollX, playerFollowX);
 
@@ -529,7 +671,7 @@ export class GameScene extends Phaser.Scene {
         }
 
         const desiredScrollY = Phaser.Math.Clamp(
-            this.wheelBody.position.y - GAME_TUNING.camera.targetScreenY,
+            this.wheelBody.position.y - this.getCameraTargetScreenY(),
             GAME_TUNING.camera.minScrollY,
             GAME_TUNING.camera.maxScrollY
         );
@@ -548,10 +690,10 @@ export class GameScene extends Phaser.Scene {
 
         this.cameras.main.scrollX = Math.max(
             0,
-            this.wheelBody.position.x - GAME_TUNING.camera.targetScreenX
+            this.wheelBody.position.x - this.getCameraTargetScreenX()
         );
         this.cameras.main.scrollY = Phaser.Math.Clamp(
-            this.wheelBody.position.y - GAME_TUNING.camera.targetScreenY,
+            this.wheelBody.position.y - this.getCameraTargetScreenY(),
             GAME_TUNING.camera.minScrollY,
             GAME_TUNING.camera.maxScrollY
         );
@@ -632,8 +774,8 @@ export class GameScene extends Phaser.Scene {
         }
 
         const grounded = this.isGroundedForInput();
-        const leftHeld = this.cursors.left.isDown;
-        const rightHeld = this.cursors.right.isDown;
+        const leftHeld = this.isLeftControlHeld();
+        const rightHeld = this.isRightControlHeld();
 
         if (grounded && leftHeld) {
             this.statusText.setText('BRAKE / REVERSE').setColor('#93c5fd');
@@ -741,6 +883,10 @@ export class GameScene extends Phaser.Scene {
         this.giveUpPromptOpen = true;
         this.giveUpPromptOpenedAt = this.time.now;
 
+        if (this.mobileGameplayLayout) {
+            setMobileGameplayControlsEnabled(false);
+        }
+
         this.matter?.world?.pause?.();
 
         /*
@@ -766,16 +912,18 @@ export class GameScene extends Phaser.Scene {
             distance: this.getDistance(),
             elapsedMs: this.getElapsedMs()
         };
+        const centerX = this.scale.width / 2;
+        const centerY = this.scale.height / 2;
 
         /*
           화면 전체를 덮는 interactive blocker가 뒤쪽 HUD/버튼 클릭을 막는다.
-          Scene은 살아 있으므로 아래의 YES / KEEP GOING 버튼은 계속 입력을 받는다.
+          모바일 720x960에서도 실제 현재 viewport 전체를 정확히 덮는다.
         */
         const blocker = this.add.rectangle(
-            640,
-            360,
-            1280,
-            720,
+            centerX,
+            centerY,
+            this.scale.width,
+            this.scale.height,
             0x000000,
             0.78
         )
@@ -783,7 +931,7 @@ export class GameScene extends Phaser.Scene {
             .setDepth(modalDepth)
             .setInteractive();
 
-        const panel = createNacrePanel(this, 640, 360, 600, 286, {
+        const panel = createNacrePanel(this, centerX, centerY, 600, 286, {
             phase: 4,
             fillAlpha: 0.96,
             glowAlpha: 0.16,
@@ -792,7 +940,7 @@ export class GameScene extends Phaser.Scene {
             .setScrollFactor(0)
             .setDepth(modalDepth + 1);
 
-        const title = createNacreText(this, 640, 286, 'REALLY GIVE UP?', {
+        const title = createNacreText(this, centerX, centerY - 74, 'REALLY GIVE UP?', {
             fontFamily: VISUAL_THEME.text.displayFont,
             fontSize: '39px',
             fontStyle: 'bold',
@@ -806,8 +954,8 @@ export class GameScene extends Phaser.Scene {
 
         const record = createNacreText(
             this,
-            640,
-            344,
+            centerX,
+            centerY - 16,
             `DIST ${snapshot.distance}   /   TIME ${this.formatElapsedMs(snapshot.elapsedMs)}`,
             {
                 fontFamily: VISUAL_THEME.text.monoFont,
@@ -825,8 +973,8 @@ export class GameScene extends Phaser.Scene {
 
         const guide = createNacreText(
             this,
-            640,
-            382,
+            centerX,
+            centerY + 22,
             'Your run is frozen at this point.',
             {
                 fontFamily: VISUAL_THEME.text.bodyFont,
@@ -843,8 +991,8 @@ export class GameScene extends Phaser.Scene {
             .setDepth(modalDepth + 2);
 
         const yesButton = createNacreButton(this, {
-            x: 522,
-            y: 445,
+            x: centerX - 118,
+            y: centerY + 85,
             width: 220,
             height: 50,
             label: 'YES, GIVE UP',
@@ -856,8 +1004,8 @@ export class GameScene extends Phaser.Scene {
             .setDepth(modalDepth + 3);
 
         const continueButton = createNacreButton(this, {
-            x: 758,
-            y: 445,
+            x: centerX + 118,
+            y: centerY + 85,
             width: 220,
             height: 50,
             label: 'KEEP GOING',
@@ -931,6 +1079,10 @@ export class GameScene extends Phaser.Scene {
             countPausedTime: true
         });
         trademillAudio.resumeBgm();
+
+        if (this.mobileGameplayLayout) {
+            setMobileGameplayControlsEnabled(true);
+        }
 
         /*
           G를 누른 상태로 확인창을 열었을 때 닫는 즉시 다시 JustDown으로
@@ -2029,10 +2181,10 @@ export class GameScene extends Phaser.Scene {
         const grounded = this.isGroundedForInput();
         const right = PLAYER_TUNING.right;
         const limits = PLAYER_TUNING.limits;
-        const rightHeld = this.cursors.right.isDown;
-        const leftHeld = this.cursors.left.isDown;
-        const rightTapped = Phaser.Input.Keyboard.JustDown(this.cursors.right);
-        const leftTapped = Phaser.Input.Keyboard.JustDown(this.cursors.left);
+        const rightHeld = this.isRightControlHeld();
+        const leftHeld = this.isLeftControlHeld();
+        const rightTapped = this.consumeRightControlTap();
+        const leftTapped = this.consumeLeftControlTap();
         const slope = grounded
             ? this.getGroundSlopeAtX(this.wheelBody.position.x)
             : 0;
@@ -2153,12 +2305,30 @@ export class GameScene extends Phaser.Scene {
             return;
         }
 
-        const parsedElapsedMs = Number(elapsedMsOverride);
+        /*
+          IMPORTANT:
+          Number(null) === 0 이므로, 예전 코드는 elapsedMsOverride 기본값 null을
+          유효한 0ms 기록으로 오인했다. 그 결과 FREE FALL / FINISH처럼 override를
+          넘기지 않는 종료가 랭킹에 0:00.0으로 저장됐다.
+
+          override가 실제로 제공된 경우에만 숫자로 사용하고, null/undefined이면
+          반드시 현재 플레이 시간을 getElapsedMs()에서 가져온다.
+          GIVE UP은 기존 snapshot 시간을 override로 넘기므로 그대로 보존된다.
+        */
+        const hasElapsedOverride =
+            elapsedMsOverride !== null && elapsedMsOverride !== undefined;
+        const parsedElapsedMs = hasElapsedOverride
+            ? Number(elapsedMsOverride)
+            : NaN;
         const elapsedMs = Number.isFinite(parsedElapsedMs)
             ? Math.max(0, Math.floor(parsedElapsedMs))
             : this.getElapsedMs();
 
         this.isGameOver = true;
+
+        if (this.mobileGameplayLayout) {
+            setMobileGameplayControlsEnabled(false);
+        }
 
         /*
           종료 사유별 8-bit 효과음.

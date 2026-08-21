@@ -9,25 +9,44 @@ import { normalizeMapId } from '../utils/mapDataUtils';
 const RANKING_API_BASE_URL = 'https://trademill-ranking-api.hyunjoonjoo.workers.dev';
 const REQUEST_TIMEOUT_MS = 10000;
 const REQUIRED_NAME_POLICY = 'auto-suffix-always-v4';
+const REQUIRED_RANKING_POLICY = 'finish-distance-time-reason-v5';
 
 export const RANKING_MODE = 'online-cloudflare-d1';
 export { formatElapsedMs };
+
+function normalizeRankingElapsedMs(value) {
+    /*
+      JSON null에 Number(null)을 적용하면 0이 된다.
+      예전 클라이언트는 이 때문에 서버의 '시간 없음(NULL)' 기록까지
+      0:00.0으로 표시했다.
+
+      실제 게임 랭킹에서 0ms 완주는 불가능하므로 0 이하 값도
+      과거 오류 데이터로 보고 null 처리한다. UI에서는 --:--.- 로 표시된다.
+    */
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
+
+    const parsed = Number(value);
+
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return null;
+    }
+
+    return Math.floor(parsed);
+}
 
 function normalizeLeaderboardEntry(entry) {
     return {
         playerName: normalizePlayerName(entry?.playerName),
         bestDistance: Math.max(0, Math.floor(Number(entry?.bestDistance) || 0)),
         bestFinished: !!entry?.bestFinished,
-        bestElapsedMs: Number.isFinite(Number(entry?.bestElapsedMs))
-            ? Math.max(0, Math.floor(Number(entry.bestElapsedMs)))
-            : null,
+        bestElapsedMs: normalizeRankingElapsedMs(entry?.bestElapsedMs),
         bestReason: String(entry?.bestReason || '').slice(0, 40),
         bestAt: String(entry?.bestAt || ''),
         lastDistance: Math.max(0, Math.floor(Number(entry?.lastDistance) || 0)),
         lastFinished: !!entry?.lastFinished,
-        lastElapsedMs: Number.isFinite(Number(entry?.lastElapsedMs))
-            ? Math.max(0, Math.floor(Number(entry.lastElapsedMs)))
-            : null,
+        lastElapsedMs: normalizeRankingElapsedMs(entry?.lastElapsedMs),
         lastReason: String(entry?.lastReason || '').slice(0, 40),
         updatedAt: String(entry?.updatedAt || '')
     };
@@ -115,6 +134,12 @@ export async function getLeaderboardResult(mapId) {
             `/leaderboard?mapId=${encodeURIComponent(safeMapId)}`
         );
 
+        if (json.rankingPolicy !== REQUIRED_RANKING_POLICY) {
+            throw new Error(
+                '랭킹 서버가 구버전입니다. 시간 랭킹 Worker를 다시 배포해주세요.'
+            );
+        }
+
         const leaderboard = Array.isArray(json.leaderboard)
             ? json.leaderboard.map(normalizeLeaderboardEntry).slice(0, 10)
             : [];
@@ -153,6 +178,32 @@ export async function getPlayerBest(mapId, playerName = null) {
         result.leaderboard.find((entry) => entry.playerName === name) ||
         null
     );
+}
+
+export function formatRankingReason(reason, finished = false) {
+    const normalized = String(reason || '').trim().toUpperCase();
+
+    if (finished || normalized === 'FINISH') {
+        return 'FIN';
+    }
+
+    if (normalized === 'GIVE UP') {
+        return 'GUP';
+    }
+
+    if (normalized === 'FREE FALL') {
+        return 'FALL';
+    }
+
+    if (normalized === 'OUT OF MARKET') {
+        return 'OUT';
+    }
+
+    if (normalized === 'MARKET CRASH') {
+        return 'CRASH';
+    }
+
+    return 'OVER';
 }
 
 export async function submitScore({
@@ -195,6 +246,12 @@ export async function submitScore({
         if (json.namePolicy !== REQUIRED_NAME_POLICY) {
             throw new Error(
                 '랭킹 서버가 구버전입니다. ranking-api Worker를 새 버전으로 배포해주세요.'
+            );
+        }
+
+        if (json.rankingPolicy !== REQUIRED_RANKING_POLICY) {
+            throw new Error(
+                '랭킹 서버가 구버전입니다. 시간 랭킹 Worker를 다시 배포해주세요.'
             );
         }
 

@@ -6,8 +6,9 @@ const MIN_FINISH_ELAPSED_MS = 3000;
 const MAX_BODY_BYTES = 2048;
 
 // 클라이언트가 실제로 새 중복 이름 정책이 배포된 서버인지 확인하는 버전 표식.
-const RANKING_API_VERSION = "2026-08-17-v4";
+const RANKING_API_VERSION = "2026-08-21-v5";
 const NAME_POLICY_VERSION = "auto-suffix-always-v4";
+const RANKING_POLICY_VERSION = "finish-distance-time-reason-v5";
 
 const MAP_DATA_BASE_URL = "https://HyunJoon-Joo.github.io/trademill";
 const MAP_INDEX_URL = `${MAP_DATA_BASE_URL}/data/maps/index.json`;
@@ -45,7 +46,8 @@ export default {
           service: "trademill-ranking-api",
           mode: "hardened",
           apiVersion: RANKING_API_VERSION,
-          namePolicy: NAME_POLICY_VERSION
+          namePolicy: NAME_POLICY_VERSION,
+          rankingPolicy: RANKING_POLICY_VERSION
         });
       }
 
@@ -60,6 +62,9 @@ export default {
 
         return json(request, {
           ok: true,
+          apiVersion: RANKING_API_VERSION,
+          namePolicy: NAME_POLICY_VERSION,
+          rankingPolicy: RANKING_POLICY_VERSION,
           mapId,
           leaderboard
         });
@@ -98,8 +103,13 @@ export default {
           return jsonError(request, "Invalid distance", 400);
         }
 
-        if (finished && elapsedMs === null) {
-          return jsonError(request, "elapsedMs is required for FINISH records", 400);
+        /*
+          v5부터 시간은 모든 랭킹의 정식 정렬 기준이다.
+          GameScene / GIVE UP snapshot 모두 elapsedMs를 이미 보내므로,
+          새 기록은 종료 사유와 관계없이 반드시 시간을 가져야 한다.
+        */
+        if (elapsedMs === null || elapsedMs <= 0) {
+          return jsonError(request, "elapsedMs must be greater than 0 for ranking records", 400);
         }
 
         const rate = await checkRateLimit(env.DB, env, request, "submit");
@@ -137,6 +147,7 @@ export default {
           ok: true,
           apiVersion: RANKING_API_VERSION,
           namePolicy: NAME_POLICY_VERSION,
+          rankingPolicy: RANKING_POLICY_VERSION,
           validation: {
             maxDistance: mapValidation.maxDistance,
             finishDistance: mapValidation.finishDistance
@@ -762,14 +773,23 @@ async function submitScore(db, input) {
 }
 
 /*
-  랭킹 표 자체는 기존 정책대로 1~10위만 반환한다.
+  랭킹 표는 1~10위만 반환한다.
 
-  순위 규칙:
-  1) 완주자 우선
-  2) 완주자는 빠른 시간 우선
-  3) 그 다음 더 먼 거리
-  4) 같은 기록이면 먼저 기록한 사람
-  5) 완전히 동일하면 player_name으로 결정적 순서를 만든다.
+  v5 순위 규칙
+  -----------------------------
+  [완주자]
+  1) FINISH 기록은 미완주 기록보다 우선
+  2) 완주자끼리는 elapsedMs가 빠를수록 우선
+  3) 완주 시간이 같으면 distance가 긴 쪽 우선
+
+  [미완주자]
+  1) distance가 긴 쪽 우선
+  2) 같은 distance면 elapsedMs가 빠른 쪽 우선
+  3) distance와 elapsedMs가 모두 같으면
+       GIVE UP > FREE FALL > 그 외 종료 사유
+  4) 그래도 같으면 먼저 기록된 쪽, 마지막으로 player_name
+
+  과거 데이터 중 elapsedMs가 NULL인 기록은 같은 거리의 정상 시간 기록보다 뒤로 보낸다.
 */
 async function getLeaderboard(db, mapId) {
   const result = await db
@@ -790,11 +810,43 @@ async function getLeaderboard(db, mapId) {
       WHERE map_id = ?
       ORDER BY
         best_finished DESC,
+
+        /* FINISH: 시간 우선 */
         CASE
-          WHEN best_finished = 1 THEN best_elapsed_ms
-          ELSE 999999999
+          WHEN best_finished = 1 AND best_elapsed_ms > 0 THEN best_elapsed_ms
+          WHEN best_finished = 1 THEN 999999999
+          ELSE 0
         END ASC,
-        best_distance DESC,
+        CASE
+          WHEN best_finished = 1 THEN best_distance
+          ELSE 0
+        END DESC,
+
+        /* 미완주: 거리 우선 */
+        CASE
+          WHEN best_finished = 0 THEN best_distance
+          ELSE -1
+        END DESC,
+
+        /* 같은 거리: 시간 우선. NULL 시간은 뒤로 */
+        CASE
+          WHEN best_finished = 0 AND (best_elapsed_ms IS NULL OR best_elapsed_ms <= 0) THEN 1
+          ELSE 0
+        END ASC,
+        CASE
+          WHEN best_finished = 0 AND best_elapsed_ms > 0 THEN best_elapsed_ms
+          WHEN best_finished = 0 THEN 999999999
+          ELSE 0
+        END ASC,
+
+        /* 같은 거리 + 같은 시간: GIVE UP > 낙하 > 기타 */
+        CASE
+          WHEN best_finished = 1 THEN 0
+          WHEN best_reason = 'GIVE UP' THEN 1
+          WHEN best_reason = 'FREE FALL' THEN 2
+          ELSE 3
+        END ASC,
+
         best_at ASC,
         player_name ASC
       LIMIT 10
@@ -833,10 +885,7 @@ async function getPlayerRecord(db, mapId, playerName) {
 
 /*
   TOP 10 바깥도 정확한 순위를 반환한다.
-
-  D1(SQLite)의 ROW_NUMBER()를 이용해 전체 맵 기록을 동일한 ORDER BY 규칙으로
-  정렬한 뒤 해당 player_name의 순위 한 줄만 가져온다.
-  leaderboard 응답은 여전히 LIMIT 10이므로 화면 구성은 기존과 같다.
+  반드시 getLeaderboard()와 완전히 같은 ORDER BY를 사용해야 한다.
 */
 async function getExactRank(db, mapId, playerName) {
   const row = await db
@@ -847,11 +896,39 @@ async function getExactRank(db, mapId, playerName) {
           ROW_NUMBER() OVER (
             ORDER BY
               best_finished DESC,
+
               CASE
-                WHEN best_finished = 1 THEN best_elapsed_ms
-                ELSE 999999999
+                WHEN best_finished = 1 AND best_elapsed_ms > 0 THEN best_elapsed_ms
+                WHEN best_finished = 1 THEN 999999999
+                ELSE 0
               END ASC,
-              best_distance DESC,
+              CASE
+                WHEN best_finished = 1 THEN best_distance
+                ELSE 0
+              END DESC,
+
+              CASE
+                WHEN best_finished = 0 THEN best_distance
+                ELSE -1
+              END DESC,
+
+              CASE
+                WHEN best_finished = 0 AND (best_elapsed_ms IS NULL OR best_elapsed_ms <= 0) THEN 1
+                ELSE 0
+              END ASC,
+              CASE
+                WHEN best_finished = 0 AND best_elapsed_ms > 0 THEN best_elapsed_ms
+                WHEN best_finished = 0 THEN 999999999
+                ELSE 0
+              END ASC,
+
+              CASE
+                WHEN best_finished = 1 THEN 0
+                WHEN best_reason = 'GIVE UP' THEN 1
+                WHEN best_reason = 'FREE FALL' THEN 2
+                ELSE 3
+              END ASC,
+
               best_at ASC,
               player_name ASC
           ) AS exact_rank
