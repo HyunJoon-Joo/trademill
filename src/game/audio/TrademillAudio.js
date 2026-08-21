@@ -65,6 +65,44 @@ class TrademillAudio {
         return !!AUDIO_TUNING.enabled;
     }
 
+    /*
+      iPhone / iPad WebKit 오디오 세션 보정
+      ------------------------------------
+      iOS의 Web Audio는 기본 audio session이 ambient 계열로 잡히면
+      기기가 무음(Silent) 모드일 때 AudioContext가 running이어도
+      실제 스피커 출력이 완전히 음소거될 수 있다.
+
+      iOS 17+ WebKit에서는 navigator.audioSession.type = 'playback'으로
+      웹 오디오가 게임/미디어 재생용이라는 의도를 명시할 수 있다.
+
+      - 지원 브라우저에서만 적용한다.
+      - 미지원 환경에서는 아무 일도 하지 않는다.
+      - 반드시 AudioContext 생성 전에 한 번 적용하도록 ensureContext()에서도 호출한다.
+      - 모바일 첫 touch/pointer gesture에서도 다시 적용한다.
+      - 게임의 실제 volume / pitch / tuning 값에는 영향이 없다.
+    */
+    configurePlaybackAudioSession() {
+        if (typeof navigator === 'undefined') {
+            return false;
+        }
+
+        const audioSession = navigator.audioSession;
+
+        if (!audioSession || !('type' in audioSession)) {
+            return false;
+        }
+
+        try {
+            if (audioSession.type !== 'playback') {
+                audioSession.type = 'playback';
+            }
+
+            return audioSession.type === 'playback';
+        } catch {
+            return false;
+        }
+    }
+
     installGlobalUnlockListeners() {
         if (this.unlockInstalled || typeof document === 'undefined') {
             return;
@@ -110,7 +148,11 @@ class TrademillAudio {
                 this.context.state !== 'running' &&
                 this.context.state !== 'closed'
             ) {
-                /* iOS Safari는 suspended 외에 interrupted 상태가 될 수도 있다. */
+                /*
+                  iOS Safari는 suspended 외에 interrupted 상태가 될 수도 있다.
+                  포그라운드 복귀 시 audio session category도 다시 확인한다.
+                */
+                this.configurePlaybackAudioSession();
                 void this.ensureUnlocked();
             }
         };
@@ -177,6 +219,12 @@ class TrademillAudio {
             return this.context;
         }
 
+        /*
+          중요: iOS에서는 AudioContext를 만들기 전에 playback session을 먼저 지정한다.
+          무음 모드에서 Web Audio만 통째로 묵음이 되는 WebKit 동작을 피하기 위한 것.
+        */
+        this.configurePlaybackAudioSession();
+
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
 
         if (!AudioContextClass) {
@@ -230,6 +278,12 @@ class TrademillAudio {
     }
 
     unlockFromUserGesture() {
+        /*
+          실제 touch/click call stack 안에서 playback audio session을 한 번 더 강제한다.
+          iOS Chrome / Firefox도 해당 iOS WebKit 미디어 세션의 영향을 받을 수 있다.
+        */
+        this.configurePlaybackAudioSession();
+
         const context = this.ensureContext();
 
         if (!context) {
@@ -242,6 +296,10 @@ class TrademillAudio {
     }
 
     async ensureUnlocked({ fromUserGesture = false } = {}) {
+        if (fromUserGesture) {
+            this.configurePlaybackAudioSession();
+        }
+
         const context = this.ensureContext();
 
         if (!context) {
