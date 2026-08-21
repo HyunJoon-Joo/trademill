@@ -1,3 +1,5 @@
+import { trademillAudio } from '../audio/TrademillAudio';
+
 /*
   TRADEMILL 모바일 플레이 전용 입력 UI
   -----------------------------------
@@ -243,7 +245,26 @@ function pressDirection(direction, event) {
 }
 
 function wireButton(button, direction) {
+    /*
+      모바일 Web Audio unlock 핵심.
+
+      GameScene.update()에서 효과음을 재생하려고 기다리면 최초 user gesture가
+      끝난 뒤가 될 수 있다. 그래서 실제 DOM 방향키에 손가락이 닿는 바로 이 순간
+      AudioContext를 직접 생성/resume/prime한다.
+
+      touchstart는 iOS Safari용 선행 보강이고, pointerdown은 실제 게임 입력이다.
+      두 이벤트가 모두 와도 TrademillAudio 내부 Promise guard가 중복 resume을 막는다.
+    */
+    button.addEventListener(
+        'touchstart',
+        () => {
+            void trademillAudio.unlockFromUserGesture();
+        },
+        { passive: true }
+    );
+
     button.addEventListener('pointerdown', (event) => {
+        void trademillAudio.unlockFromUserGesture();
         pressDirection(direction, event);
     });
 

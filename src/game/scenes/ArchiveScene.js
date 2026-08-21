@@ -4,6 +4,7 @@ import { fetchDataJson, MAP_INDEX_PATH } from '../config/dataConfig';
 import { VISUAL_THEME } from '../config/visualTheme';
 import {
     formatElapsedMs,
+    formatRankingReason,
     getLeaderboardResult
 } from '../services/rankingService';
 import {

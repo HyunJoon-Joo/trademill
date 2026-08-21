@@ -81,7 +81,12 @@ class TrademillAudio {
           최초 입력 이벤트가 조금씩 다르게 전달될 수 있기 때문이다.
         */
         this.unlockHandler = () => {
-            void this.ensureUnlocked();
+            /*
+              중요: 모바일 Safari/WebKit에서는 AudioContext.resume()을
+              실제 사용자 gesture 안에서 직접 호출하는 것이 가장 안전하다.
+              전역 capture listener가 pointer/touch/click보다 먼저 이 경로를 탄다.
+            */
+            void this.unlockFromUserGesture();
         };
 
         this.getUnlockEventNames().forEach((eventName) => {
@@ -101,8 +106,11 @@ class TrademillAudio {
             if (
                 document.visibilityState === 'visible' &&
                 this.isUnlocked &&
-                this.context?.state === 'suspended'
+                this.context &&
+                this.context.state !== 'running' &&
+                this.context.state !== 'closed'
             ) {
+                /* iOS Safari는 suspended 외에 interrupted 상태가 될 수도 있다. */
                 void this.ensureUnlocked();
             }
         };
@@ -116,9 +124,11 @@ class TrademillAudio {
 
     getUnlockEventNames() {
         return [
+            /* iOS Safari에서 첫 손가락 접촉 순간을 가장 먼저 잡는다. */
+            'touchstart',
             'pointerdown',
-            'pointerup',
             'mousedown',
+            'pointerup',
             'mouseup',
             'click',
             'touchend',
@@ -194,7 +204,44 @@ class TrademillAudio {
         return context;
     }
 
-    async ensureUnlocked() {
+    primeContextFromUserGesture(context = this.context) {
+        if (!context || context.state === 'closed') {
+            return;
+        }
+
+        /*
+          iOS/WebKit unlock 보강용 무음 1-sample source.
+
+          - 사용자 touch/pointer 이벤트 안에서 즉시 start()한다.
+          - 실제 소리는 0 sample이라 들리지 않는다.
+          - AudioContext를 '실제로 재생을 시도한 context'로 만들어
+            resume()만 호출하는 것보다 모바일 브라우저에서 안정적이다.
+          - 게임 효과음/볼륨/튜닝값에는 아무 영향이 없다.
+        */
+        try {
+            const buffer = context.createBuffer(1, 1, context.sampleRate || 44100);
+            const source = context.createBufferSource();
+            source.buffer = buffer;
+            source.connect(context.destination);
+            source.start(0);
+        } catch {
+            // unlock 보조 source 생성 실패는 resume 시도 자체를 막지 않는다.
+        }
+    }
+
+    unlockFromUserGesture() {
+        const context = this.ensureContext();
+
+        if (!context) {
+            return Promise.resolve(false);
+        }
+
+        /* 반드시 현재 touch/pointer/key gesture call stack 안에서 실행. */
+        this.primeContextFromUserGesture(context);
+        return this.ensureUnlocked({ fromUserGesture: true });
+    }
+
+    async ensureUnlocked({ fromUserGesture = false } = {}) {
         const context = this.ensureContext();
 
         if (!context) {
@@ -222,8 +269,20 @@ class TrademillAudio {
 
         this.unlockInFlight = (async () => {
             try {
+                if (fromUserGesture) {
+                    this.primeContextFromUserGesture(context);
+                }
+
                 if (context.state !== 'running') {
                     await context.resume();
+                }
+
+                /*
+                  일부 iOS 버전은 resume 직후 user gesture 안에서 source가 한 번 더
+                  시작되면 안정적으로 running 상태가 유지되는 편이라 한 번 보강한다.
+                */
+                if (fromUserGesture && context.state === 'running') {
+                    this.primeContextFromUserGesture(context);
                 }
             } catch {
                 return false;
@@ -254,11 +313,20 @@ class TrademillAudio {
             return;
         }
 
-        const context = this.ensureContext();
+        /*
+          아직 첫 사용자 activation이 오지 않았다면 hover 같은 비활성 이벤트 때문에
+          AudioContext를 미리 생성하지 않는다. 모바일 Safari에서 특히 중요하다.
 
-        if (!context) {
+          StartGame이 설치한 capture unlock listener가 실제 click/touch/key 순간 먼저
+          unlockFromUserGesture()를 실행하고, 그 뒤 발생한 SFX 요청은 아래에서
+          unlock Promise를 기다렸다가 정상 재생된다.
+        */
+        if (!this.context) {
+            this.installGlobalUnlockListeners();
             return;
         }
+
+        const context = this.context;
 
         if (context.state === 'running') {
             this.isUnlocked = true;
@@ -936,8 +1004,13 @@ class TrademillAudio {
         }
 
         this.bgmRequested = true;
-        this.ensureContext();
 
+        /*
+          중요: AudioContext를 페이지 로드 시 미리 만들지 않는다.
+          특히 iOS Safari에서는 사용자 gesture 전에 생성된 context가
+          계속 suspended/interrupted로 남는 경우가 있어, 첫 실제 터치/클릭/키 입력
+          순간 ensureContext()가 실행되도록 지연한다.
+        */
         if (this.context?.state === 'running' && !this.bgmPaused) {
             this.startBgmScheduler();
         }
