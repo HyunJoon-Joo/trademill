@@ -160,7 +160,11 @@ function extractAllBars(chartResult, candidate) {
                 Number.isFinite(b.open) &&
                 Number.isFinite(b.high) &&
                 Number.isFinite(b.low) &&
-                Number.isFinite(b.close)
+                Number.isFinite(b.close) &&
+                b.open > 0 &&
+                b.high > 0 &&
+                b.low > 0 &&
+                b.close > 0
         )
         .sort((a, b) => new Date(a.time) - new Date(b.time));
 
