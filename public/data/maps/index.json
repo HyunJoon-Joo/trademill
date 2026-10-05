@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-02T14:49:17.816Z",
+  "updatedAt": "2026-10-05T17:15:04.420Z",
   "latestMapId": "2026-10-02_KS11_1m_v5kospi",
   "maps": [
     {
@@ -23,7 +23,7 @@
         "priceRangePct": 1.0912,
         "heightRangePx": 2480.32
       },
-      "generatedAt": "2026-10-02T14:49:17.812Z",
+      "generatedAt": "2026-10-05T17:15:04.414Z",
       "path": "/data/maps/2026-10-02_KS11_1m_v5kospi.json"
     },
     {
